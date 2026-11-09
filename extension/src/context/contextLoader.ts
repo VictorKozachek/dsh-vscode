@@ -22,8 +22,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { statSync, watch as watchFs, type FSWatcher } from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync, statSync, watch as watchFs, type FSWatcher } from 'node:fs';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -152,7 +152,7 @@ export interface FileIndexEntry {
 
 /** Конфликт правил/скилов, который отдаётся инспектору (#013). */
 export interface ContextConflict {
-  readonly kind: 'skill' | 'rule';
+  readonly kind: 'skill';
   readonly name: string;
   readonly winner: string;
   readonly ignored: string;
@@ -501,9 +501,15 @@ export function isBinaryFile(fileName: string): boolean {
 
 // --- загрузчик --------------------------------------------------------------
 
+interface RuleFileRef {
+  readonly relativePath: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
 interface Collected {
   readonly files: readonly FoundFile[];
-  readonly ruleFiles: readonly string[];
+  readonly ruleFiles: readonly RuleFileRef[];
   readonly inputs: readonly string[];
 }
 
@@ -630,11 +636,11 @@ export class ContextLoader {
     for (const file of walked.files) {
       inputs.push(`${file.relativePath}:${String(file.mtimeMs)}:${String(file.size)}`);
     }
-    for (const relativePath of walked.ruleFiles) {
-      inputs.push(`rule:${relativePath}`);
+    for (const rule of walked.ruleFiles) {
+      inputs.push(`rule:${rule.relativePath}:${String(rule.mtimeMs)}:${String(rule.size)}`);
     }
 
-    for (const directory of this.#skillsDirectories()) {
+    for (const directory of this.#skillsDirectories(parsed.manifest)) {
       const found = await this.#listSkillFiles(directory.absolute, directory.relative);
       for (const file of found) {
         inputs.push(`skill:${file.relativePath}:${String(file.mtimeMs)}:${String(file.size)}`);
@@ -646,7 +652,7 @@ export class ContextLoader {
       inputs.push(`user-rules:${String(userRules.mtimeMs)}:${String(userRules.size)}`);
     }
 
-    const memoryDirectory = this.#memoryDirectory(parsed.manifest);
+    const memoryDirectory = await this.#memoryDirectory(parsed.manifest);
     if (memoryDirectory !== null) {
       const found = await this.#listMarkdownFiles(memoryDirectory.absolute, memoryDirectory.relative);
       for (const file of found) {
@@ -657,9 +663,9 @@ export class ContextLoader {
     return { files: walked.files, ruleFiles: walked.ruleFiles, inputs };
   }
 
-  async #walk(matcher: IgnoreMatcher): Promise<{ files: FoundFile[]; ruleFiles: string[] }> {
+  async #walk(matcher: IgnoreMatcher): Promise<{ files: FoundFile[]; ruleFiles: RuleFileRef[] }> {
     const files: FoundFile[] = [];
-    const ruleFiles: string[] = [];
+    const ruleFiles: RuleFileRef[] = [];
 
     const visit = async (directory: string): Promise<void> => {
       if (this.#disposed || files.length >= this.#maxFiles) {
@@ -679,6 +685,9 @@ export class ContextLoader {
         const absolutePath = path.join(directory, entry.name);
         const relativePath = toPosix(path.relative(this.#root, absolutePath));
 
+        if (entry.name === '.git') {
+          continue; // .git бывает и каталогом, и файлом (git worktree) — не индексируем
+        }
         if (entry.isSymbolicLink()) {
           continue; // циклы и внешние ссылки не обходим
         }
@@ -693,7 +702,10 @@ export class ContextLoader {
           continue;
         }
         if (entry.name === USER_RULES_FILE) {
-          ruleFiles.push(relativePath);
+          const ruleStats = statSync(absolutePath, { throwIfNoEntry: false });
+          if (ruleStats !== undefined && ruleStats.isFile()) {
+            ruleFiles.push({ relativePath, size: ruleStats.size, mtimeMs: ruleStats.mtimeMs });
+          }
         }
         if (isSecretFile(entry.name) || matcher.ignores(relativePath, false)) {
           continue;
@@ -739,9 +751,10 @@ export class ContextLoader {
     const manifest = await this.#readText('.dsh/workspace.json');
     const parsed = manifest === null ? { manifest: null, warnings: [] } : parseWorkspaceManifest(manifest.text);
     const maxBytes = parsed.manifest?.context?.maxBytes ?? DEFAULT_MAX_BYTES;
+    const manifestWarnings = [...parsed.warnings, ...this.#validateManifest(parsed.manifest)];
 
-    const rules = await this.#loadRules(collected.ruleFiles, maxBytes);
-    const skills = await this.#loadSkills();
+    const rules = await this.#loadRules(collected.ruleFiles, parsed.manifest, maxBytes);
+    const skills = await this.#loadSkills(parsed.manifest);
     const memory = await this.#loadMemory(parsed.manifest, maxBytes);
 
     const conflicts: ContextConflict[] = [];
@@ -785,7 +798,7 @@ export class ContextLoader {
     return {
       workspacePath: this.#root,
       manifest: parsed.manifest,
-      manifestWarnings: parsed.warnings,
+      manifestWarnings,
       rules,
       skills: skills.filter((skill) => !conflicts.some((conflict) => conflict.ignored === skill.path)),
       memory,
@@ -803,41 +816,72 @@ export class ContextLoader {
     };
   }
 
-  async #loadRules(ruleFiles: readonly string[], maxBytes: number): Promise<readonly RuleDocument[]> {
+  async #loadRules(
+    ruleFiles: readonly RuleFileRef[],
+    manifest: WorkspaceManifest | null,
+    maxBytes: number
+  ): Promise<readonly RuleDocument[]> {
     const documents: RuleDocument[] = [];
+    const seen = new Set<string>();
     let remaining = maxBytes;
 
+    const addRule = (
+      key: string,
+      source: RuleDocument['source'],
+      relativePath: string,
+      text: { text: string; size: number }
+    ): void => {
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      const clipped = truncateToBytes(text.text, remaining);
+      remaining = Math.max(0, remaining - Buffer.byteLength(clipped.text));
+      const directory = toPosix(path.posix.dirname(relativePath));
+      documents.push({
+        path: key,
+        source,
+        depth: directory === '.' ? 0 : directory.split('/').length,
+        text: clipped.text,
+        bytes: text.size,
+        truncated: clipped.truncated
+      });
+    };
+
     for (const file of ruleFiles) {
-      const text = await this.#readText(file);
+      const text = await this.#readText(file.relativePath);
       if (text === null) {
         continue;
       }
-      const truncated = text.text.length > remaining;
-      const clipped = truncated ? text.text.slice(0, Math.max(0, remaining)) : text.text;
-      remaining = Math.max(0, remaining - clipped.length);
-      const directory = toPosix(path.dirname(file));
-      documents.push({
-        path: file,
-        source: 'project',
-        depth: directory === '.' ? 0 : directory.split('/').length,
-        text: clipped,
-        bytes: text.size,
-        truncated
-      });
+      addRule(file.relativePath, 'project', file.relativePath, text);
+    }
+
+    // `rules` из манифеста (§4.3): дополнительные файлы правил проекта.
+    for (const entry of manifest?.rules ?? []) {
+      const relativePath = toPosix(entry);
+      if (!this.#isSafeManifestPath(relativePath)) {
+        continue;
+      }
+      const text = await this.#readText(relativePath);
+      if (text === null) {
+        continue;
+      }
+      addRule(relativePath, 'project', relativePath, text);
     }
 
     const userRulesPath = path.join(this.#home, '.dsh', USER_RULES_FILE);
-    const userRules = await this.#statFile(userRulesPath);
-    if (userRules !== null) {
+    if ((await this.#statFile(userRulesPath)) !== null) {
       const text = await readTextFile(userRulesPath);
       if (text !== null) {
+        const clipped = truncateToBytes(text, remaining);
+        remaining = Math.max(0, remaining - Buffer.byteLength(clipped.text));
         documents.push({
           path: `~/.dsh/${USER_RULES_FILE}`,
           source: 'user',
           depth: 0,
-          text: text.slice(0, Math.max(0, remaining)),
+          text: clipped.text,
           bytes: Buffer.byteLength(text),
-          truncated: text.length > remaining
+          truncated: clipped.truncated
         });
       }
     }
@@ -845,9 +889,9 @@ export class ContextLoader {
     return documents.sort((left, right) => rulePriority(right) - rulePriority(left));
   }
 
-  async #loadSkills(): Promise<readonly SkillDescriptor[]> {
+  async #loadSkills(manifest: WorkspaceManifest | null): Promise<readonly SkillDescriptor[]> {
     const skills: SkillDescriptor[] = [];
-    for (const directory of this.#skillsDirectories()) {
+    for (const directory of this.#skillsDirectories(manifest)) {
       const files = await this.#listSkillFiles(directory.absolute, directory.relative);
       for (const file of files) {
         const text = await readTextFile(file.absolutePath);
@@ -868,8 +912,11 @@ export class ContextLoader {
     return skills;
   }
 
-  async #loadMemory(manifest: WorkspaceManifest | null, maxBytes: number): Promise<readonly MemoryEntry[]> {
-    const directory = this.#memoryDirectory(manifest);
+  async #loadMemory(
+    manifest: WorkspaceManifest | null,
+    maxBytes: number
+  ): Promise<readonly MemoryEntry[]> {
+    const directory = await this.#memoryDirectory(manifest);
     if (directory === null) {
       return [];
     }
@@ -880,31 +927,120 @@ export class ContextLoader {
       if (remaining <= 0) {
         break;
       }
+      if (isSecretFile(path.basename(file.relativePath))) {
+        continue;
+      }
       const text = await readTextFile(file.absolutePath);
       if (text === null) {
         continue;
       }
-      const clipped = text.slice(0, remaining);
-      remaining -= clipped.length;
-      memory.push({ path: file.relativePath, text: clipped });
+      const clipped = truncateToBytes(text, remaining);
+      remaining = Math.max(0, remaining - Buffer.byteLength(clipped.text));
+      memory.push({ path: file.relativePath, text: clipped.text });
     }
     return memory;
   }
 
-  #skillsDirectories(): readonly { absolute: string; relative: string; source: 'project' | 'user' }[] {
-    return [
+  #skillsDirectories(
+    manifest: WorkspaceManifest | null
+  ): readonly { absolute: string; relative: string; source: 'project' | 'user' }[] {
+    const directories: { absolute: string; relative: string; source: 'project' | 'user' }[] = [
       { absolute: path.join(this.#home, '.dsh', 'skills'), relative: '~/.dsh/skills', source: 'user' },
       { absolute: path.join(this.#root, '.dsh', 'skills'), relative: '.dsh/skills', source: 'project' },
       { absolute: path.join(this.#root, '.agents', 'skills'), relative: '.agents/skills', source: 'project' }
     ];
+
+    // `skills` из манифеста (§4.3): дополнительные каталоги скилов проекта.
+    const seen = new Set(directories.map((directory) => directory.absolute));
+    for (const entry of manifest?.skills ?? []) {
+      const relative = toPosix(entry).replace(/\/+$/, '');
+      if (!this.#isSafeManifestPath(relative)) {
+        continue;
+      }
+      const absolute = path.resolve(this.#root, relative);
+      if (seen.has(absolute)) {
+        continue;
+      }
+      seen.add(absolute);
+      directories.push({ absolute, relative, source: 'project' });
+    }
+    return directories;
   }
 
-  #memoryDirectory(manifest: WorkspaceManifest | null): { absolute: string; relative: string } | null {
+  /**
+   * Каталог памяти проекта. Только внутри воркспейса: `../outside`, абсолютный
+   * путь снаружи и симлинк наружу отбрасываются (иначе в контекст агента
+   * утекали бы произвольные `.md` с машины).
+   */
+  async #memoryDirectory(
+    manifest: WorkspaceManifest | null
+  ): Promise<{ absolute: string; relative: string } | null> {
     if (manifest?.memory?.enabled !== true) {
       return null;
     }
-    const relative = manifest.memory.path ?? '.dsh/memory';
-    return { absolute: path.resolve(this.#root, relative), relative };
+    const relative = toPosix(manifest.memory.path ?? '.dsh/memory');
+    const absolute = path.resolve(this.#root, relative);
+    if (!isPathInside(this.#root, absolute)) {
+      this.#log(`ContextLoader: memory.path «${relative}» вне воркспейса — память не читается`);
+      return null;
+    }
+
+    let realAbsolute: string;
+    try {
+      realAbsolute = await realpath(absolute);
+    } catch {
+      return null;
+    }
+    const realRoot = await realpath(this.#root).catch(() => this.#root);
+    if (!isPathInside(realRoot, realAbsolute)) {
+      this.#log(
+        `ContextLoader: memory.path «${relative}» ведёт за пределы воркспейса (симлинк) — память не читается`
+      );
+      return null;
+    }
+    return { absolute: realAbsolute, relative };
+  }
+
+  /** Проверка путей из манифеста: всё должно лежать внутри воркспейса. */
+  #isSafeManifestPath(relativePath: string): boolean {
+    return isPathInside(this.#root, path.resolve(this.#root, relativePath));
+  }
+
+  /** Предупреждения манифеста про пути, которые не будут прочитаны. */
+  #validateManifest(manifest: WorkspaceManifest | null): readonly string[] {
+    if (manifest === null) {
+      return [];
+    }
+    const warnings: string[] = [];
+
+    for (const entry of manifest.rules ?? []) {
+      const relative = toPosix(entry);
+      if (!this.#isSafeManifestPath(relative)) {
+        warnings.push(`.dsh/workspace.json: rules «${relative}» вне воркспейса — пропущено`);
+      } else if (!existsSync(path.resolve(this.#root, relative))) {
+        warnings.push(`.dsh/workspace.json: rules «${relative}» не найден — пропущено`);
+      }
+    }
+
+    for (const entry of manifest.skills ?? []) {
+      const relative = toPosix(entry).replace(/\/+$/, '');
+      if (!this.#isSafeManifestPath(relative)) {
+        warnings.push(`.dsh/workspace.json: skills «${relative}» вне воркспейса — пропущено`);
+      } else if (!existsSync(path.resolve(this.#root, relative))) {
+        warnings.push(`.dsh/workspace.json: skills «${relative}» не найден — пропущено`);
+      }
+    }
+
+    if (manifest.memory?.enabled === true && manifest.memory.path !== undefined) {
+      const relative = toPosix(manifest.memory.path);
+      if (!this.#isSafeManifestPath(relative)) {
+        warnings.push(
+          `.dsh/workspace.json: memory.path «${manifest.memory.path}» вне воркспейса — память не читается`
+        );
+      }
+    }
+
+    return warnings;
   }
 
   async #listSkillFiles(
@@ -1151,4 +1287,19 @@ function unquote(value: string): string {
     return trimmed.slice(1, -1);
   }
   return trimmed;
+}
+
+/** Внутри ли путь каталога (защита от `../` и абсолютных путей из манифеста). */
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/** Обрезка текста по байтам (а не по UTF-16 символам), чтобы уважать maxBytes. */
+function truncateToBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text) <= maxBytes) {
+    return { text, truncated: false };
+  }
+  const clipped = Buffer.from(text).subarray(0, Math.max(0, maxBytes)).toString('utf8');
+  return { text: clipped, truncated: true };
 }
