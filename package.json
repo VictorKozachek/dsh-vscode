@@ -12,7 +12,7 @@
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm run typecheck && eslint .",
-    "test": "pnpm run build && node --test",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
     "clean": "pnpm -r run clean"
   },
   "devDependencies": {
