@@ -57,6 +57,11 @@
         "command": "dsh.openSettings",
         "title": "Open Settings",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.pruneWorkspaces",
+        "title": "Prune Workspaces",
+        "category": "DSH"
       }
     ],
     "configuration": {
@@ -122,6 +127,12 @@
           "type": "string",
           "default": "~/.dsh/workspaces",
           "description": "Каталог реестра воркспейсов."
+        },
+        "dsh.workspace.keepDays": {
+          "type": "number",
+          "default": 90,
+          "minimum": 1,
+          "description": "Сколько дней хранить запись реестра, которую не открывали (GC — команда «DSH: Prune Workspaces»)."
         },
         "dsh.kanban.enabled": {
           "type": "boolean",
