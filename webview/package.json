@@ -5,7 +5,7 @@
   "description": "WebView панели DSH (панель чата появится в задаче #005)",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && node scripts/copy-dist.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
