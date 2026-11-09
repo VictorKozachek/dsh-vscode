@@ -14,6 +14,8 @@ import { randomBytes } from 'node:crypto';
 
 import * as vscode from 'vscode';
 
+import type { ChatController } from './chatEvents';
+import { dispatchWebviewMessage } from './chatDispatch';
 import {
   ChatSession,
   buildChatViewHtml,
@@ -34,6 +36,12 @@ export interface ChatViewProviderOptions {
   readonly log?: ((line: string) => void) | undefined;
   /** Текст ответа-эха на сообщение пользователя (подменяется в тестах). */
   readonly echo?: ((text: string, locale: 'ru' | 'en') => string) | undefined;
+  /**
+   * Потоковый чат (#008): события DshBridge → WebView, батчинг токенов,
+   * отмена через turn.cancel. Подключается в активации, когда есть мост;
+   * без него панель работает в эхо-режиме каркаса.
+   */
+  readonly chat?: ChatController | undefined;
 }
 
 const MAX_MESSAGES = 200;
@@ -111,6 +119,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   dispose(): void {
     this.#disposed = true;
     this.#session.dispose();
+    // Панель владеет контроллером: подписки на мост снимаются вместе с ней.
+    this.#options.chat?.dispose();
     this.#view = undefined;
   }
 
@@ -154,12 +164,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const emitted = (outgoing: ExtensionMessage): void => {
-      void this.postMessage(outgoing);
-    };
-    for (const outgoing of this.#session.handle(message, () => this.#options.state(), emitted)) {
-      await this.postMessage(outgoing);
-    }
+    await dispatchWebviewMessage(message, {
+      chat: this.#options.chat,
+      session: this.#session,
+      state: () => this.#options.state(),
+      post: (outgoing) => this.postMessage(outgoing),
+      log: (line) => this.#options.log?.(line)
+    });
   }
 
 }
