@@ -1,27 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import type { ReactElement } from 'react';
 
+import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
 import { PanelStatus } from './components/PanelStatus';
 import { createTranslator, resolveLocale } from './i18n';
-import type { ChatMessage, ChatPanelState, ExtensionToWebview } from './messages';
+import type { ChatPanelState, ChatPanelStatus, ExtensionToWebview } from './messages';
 import { onExtensionMessage, postToExtension } from './vscodeApi';
 
 /**
- * Панель DSH: шапка, лента, composer и статус-строка.
+ * Панель DSH: шапка, лента с потоковыми токенами и tool-call блоками,
+ * composer и статус-строка.
  *
- * Данные приходят из extension host (`state`, `message`, `status`), действия
- * уходят туда же (`ready`, `sendMessage`, `stop`). Эхо-ответ на этом этапе
- * делает extension host — реальный обмен через DshBridge появится в #008.
+ * Лента собирается редьюсером `chatFeedReducer` из событий extension host
+ * (`chatToken`, `chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`,
+ * `chatStatus`); «плоские» `message` остаются для эхо-режима каркаса.
  */
 export function App(): ReactElement {
   const [locale, setLocale] = useState<'ru' | 'en'>(() =>
     resolveLocale(typeof navigator === 'undefined' ? undefined : navigator.language)
   );
   const [panel, setPanel] = useState<ChatPanelState | null>(null);
-  const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
+  const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
 
   const t = useMemo(() => createTranslator(locale), [locale]);
@@ -35,7 +37,7 @@ export function App(): ReactElement {
           break;
         }
         case 'message': {
-          setMessages((previous) => [...previous, message.message]);
+          dispatch({ type: 'appendMessage', message: message.message });
           break;
         }
         case 'status': {
@@ -45,7 +47,57 @@ export function App(): ReactElement {
           break;
         }
         case 'replaceMessages': {
-          setMessages([...message.messages]);
+          dispatch({ type: 'replaceMessages', messages: message.messages });
+          break;
+        }
+        case 'chatStatus': {
+          dispatch({ type: 'status', status: message.status });
+          if (message.status === 'error') {
+            dispatch({ type: 'error', message: message.detail ?? 'DSH error' });
+          }
+          break;
+        }
+        case 'chatToken': {
+          dispatch({ type: 'token', turnId: message.turnId, text: message.text });
+          break;
+        }
+        case 'chatToolCall': {
+          dispatch({
+            type: 'toolCall',
+            callId: message.call.id,
+            name: message.call.name,
+            arguments: message.call.arguments
+          });
+          break;
+        }
+        case 'chatToolResult': {
+          dispatch(
+            message.result.error === undefined
+              ? {
+                  type: 'toolResult',
+                  callId: message.result.callId,
+                  ok: message.result.ok,
+                  result: message.result.result
+                }
+              : {
+                  type: 'toolResult',
+                  callId: message.result.callId,
+                  ok: message.result.ok,
+                  error: message.result.error
+                }
+          );
+          break;
+        }
+        case 'chatDone': {
+          dispatch({
+            type: 'done',
+            turnId: message.turnId,
+            finishReason: message.finishReason
+          });
+          break;
+        }
+        case 'chatCancelled': {
+          dispatch({ type: 'cancelled' });
           break;
         }
         default:
@@ -70,7 +122,8 @@ export function App(): ReactElement {
     postToExtension({ type: 'stop' });
   }, []);
 
-  const status = panel?.status ?? 'idle';
+  const panelStatus: ChatPanelStatus =
+    feed.status === 'streaming' ? 'thinking' : feed.status === 'cancelled' ? 'stopped' : 'idle';
 
   return (
     <main className="dsh-panel">
@@ -79,12 +132,12 @@ export function App(): ReactElement {
         workspaceName={panel?.workspaceName ?? t('state.noWorkspace')}
         model={panel?.model ?? '—'}
         sandboxMode={panel?.sandboxMode ?? '—'}
-        status={status}
+        status={panelStatus}
         onStop={stop}
       />
-      <MessageList t={t} messages={messages} />
+      <MessageList t={t} entries={feed.entries} />
       <Composer t={t} value={draft} onChange={setDraft} onSubmit={send} />
-      <PanelStatus t={t} status={status} />
+      <PanelStatus t={t} status={panelStatus} />
     </main>
   );
 }

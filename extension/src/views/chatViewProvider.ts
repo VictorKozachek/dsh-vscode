@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto';
 
 import * as vscode from 'vscode';
 
+import type { ChatController } from './chatEvents';
 import {
   ChatSession,
   buildChatViewHtml,
@@ -34,6 +35,12 @@ export interface ChatViewProviderOptions {
   readonly log?: ((line: string) => void) | undefined;
   /** Текст ответа-эха на сообщение пользователя (подменяется в тестах). */
   readonly echo?: ((text: string, locale: 'ru' | 'en') => string) | undefined;
+  /**
+   * Потоковый чат (#008): события DshBridge → WebView, батчинг токенов,
+   * отмена через turn.cancel. Подключается в активации, когда есть мост;
+   * без него панель работает в эхо-режиме каркаса.
+   */
+  readonly chat?: ChatController | undefined;
 }
 
 const MAX_MESSAGES = 200;

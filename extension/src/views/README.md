@@ -93,3 +93,26 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
    переключить светлую/тёмную тему, панель DSH должна сохранять контраст.
 3. Фокус: `Tab` доходит до composer и кнопок, фокус виден; `Enter` отправляет,
    `Shift+Enter` переносит строку; лента объявляется скринридером как log.
+
+## Потоковый чат (#008)
+
+`chatEvents.ts` — мост между событиями `DshBridge` и панелью:
+
+- `ChatController` подписывается на `token`, `tool.call`, `tool.result`,
+  `turn.done`, `error` и шлёт в WebView сообщения `chatToken`, `chatToolCall`,
+  `chatToolResult`, `chatDone`, `chatStatus`;
+- `TokenBatcher` копит токены и отдаёт пачку не чаще 33 мс (~30 fps): длинный
+  ответ — одно `postMessage` на кадр, а не сотни;
+- `send(text)` → `turn.start` (сообщение пользователя уходит в ленту сразу),
+  `cancel()` → `turn.cancel`, затем `chatCancelled` и статус `cancelled`;
+- `turn.done`/`tool.call`/`tool.result`/отмена принудительно сбрасывают батчер,
+  чтобы хвост токенов не терялся;
+- `dispose()` снимает подписки на мост и таймер батчера — утечек listener'ов нет.
+
+Провайдер панели принимает `chat?: ChatController`: при наличии он заменяет
+эхо-режим каркаса, иначе панель работает как раньше. Проводка контроллера к
+реальному `DshBridge` и `SessionManager` — #011 (в активации расширения).
+
+Контракт сообщений расширен в `chatHtml.ts` (`chatStatus`, `chatToken`,
+`chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`); паритет с
+`webview/src/messages.ts` проверяет `tests/chat-view.test.mjs`.

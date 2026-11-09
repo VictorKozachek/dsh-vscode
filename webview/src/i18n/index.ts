@@ -27,7 +27,18 @@ const ru = {
   'status.thinking': 'Думает…',
   'status.stopped': 'Остановлено',
   'status.tokens': 'Токены',
-  'state.noWorkspace': 'нет папки'
+  'state.noWorkspace': 'нет папки',
+  'tool.call': 'Инструмент',
+  'tool.arguments': 'Аргументы',
+  'tool.result': 'Результат',
+  'tool.status.running': 'выполняется',
+  'tool.status.done': 'готово',
+  'tool.status.error': 'ошибка',
+  'tool.duration': 'Длительность',
+  'markdown.copy': 'Копировать',
+  'markdown.copied': 'Скопировано',
+  'message.cancelled': 'остановлено',
+  'message.error': 'ошибка'
 } as const;
 
 const en: Readonly<Record<keyof typeof ru, string>> = {
@@ -50,7 +61,18 @@ const en: Readonly<Record<keyof typeof ru, string>> = {
   'status.thinking': 'Thinking…',
   'status.stopped': 'Stopped',
   'status.tokens': 'Tokens',
-  'state.noWorkspace': 'no folder'
+  'state.noWorkspace': 'no folder',
+  'tool.call': 'Tool',
+  'tool.arguments': 'Arguments',
+  'tool.result': 'Result',
+  'tool.status.running': 'running',
+  'tool.status.done': 'done',
+  'tool.status.error': 'error',
+  'tool.duration': 'Duration',
+  'markdown.copy': 'Copy',
+  'markdown.copied': 'Copied',
+  'message.cancelled': 'stopped',
+  'message.error': 'error'
 };
 
 /** Ключ строки перевода. */
