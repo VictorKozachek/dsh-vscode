@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
+import { ChatViewProvider } from './views/chatViewProvider';
+import type { ChatPanelStateDto } from './views/chatHtml';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
 
 /**
@@ -67,6 +69,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
   );
 
+  const chatView = new ChatViewProvider({
+    extensionUri: context.extensionUri,
+    state: () => currentPanelState(),
+    log: (line) => {
+      log.appendLine(line);
+    }
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatView, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
+  context.subscriptions.push({ dispose: () => chatView.dispose() });
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       updateStatusBar();
@@ -78,6 +94,23 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   statusBarItem?.dispose();
   statusBarItem = undefined;
+}
+
+/** Состояние панели чата для только что открытого WebView. */
+function currentPanelState(): Omit<ChatPanelStateDto, 'status'> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  return {
+    workspaceName: workspaceName(),
+    model: configuration.get<string>('defaultModel') ?? 'deepseek-chat',
+    sandboxMode: configuration.get<string>('sandboxMode') ?? 'workspace-write',
+    locale: detectLocale()
+  };
+}
+
+/** Язык интерфейса панели: ru, если интерфейс VS Code русский, иначе en. */
+function detectLocale(): 'ru' | 'en' {
+  const language = typeof vscode.env === 'object' && vscode.env !== undefined ? vscode.env.language : '';
+  return typeof language === 'string' && language.toLowerCase().startsWith('ru') ? 'ru' : 'en';
 }
 
 /** Имя открытой папки (или имя workspace) для статус-бара. */

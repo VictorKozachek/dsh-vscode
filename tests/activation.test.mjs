@@ -23,12 +23,14 @@ function createFakeVscode({ settings = {} } = {}) {
     executed: [],
     commands: new Map(),
     changeListeners: [],
+    viewProviders: new Map(),
     settings,
     workspaceFolders: [{ name: 'demo-project', index: 0 }]
   };
 
   const fake = {
     StatusBarAlignment: { Left: 1, Right: 2 },
+    env: { language: 'ru' },
     window: {
       createStatusBarItem(id, alignment, priority) {
         const item = {
@@ -69,6 +71,10 @@ function createFakeVscode({ settings = {} } = {}) {
       async showErrorMessage(message) {
         state.errors.push(message);
         return undefined;
+      },
+      registerWebviewViewProvider(viewType, provider) {
+        state.viewProviders.set(viewType, provider);
+        return { dispose() {} };
       }
     },
     commands: {
@@ -174,6 +180,19 @@ test('активация: все команды каркаса зарегист�
 
   assert.ok(state.output.some((line) => line.includes('demo-project')));
   assert.ok(context.subscriptions.length >= 10, 'подписки должны попадать в context.subscriptions');
+});
+
+test('активация: панель dsh.chat зарегистрирована', () => {
+  const { fake, state } = createFakeVscode();
+  const extension = loadExtensionWithFakeVscode(fake);
+  const context = { subscriptions: [] };
+
+  extension.activate(context);
+
+  const provider = state.viewProviders.get('dsh.chat');
+  assert.ok(provider, 'провайдер панели должен быть зарегистрирован');
+  assert.equal(typeof provider.resolveWebviewView, 'function');
+  assert.equal(typeof provider.dispose, 'function');
 });
 
 test('активация: DSH: Prune Workspaces чистит реестр по настройкам', async () => {
