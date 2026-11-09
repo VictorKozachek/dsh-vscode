@@ -1,0 +1,153 @@
+{
+  "name": "dsh-vscode",
+  "displayName": "DSH for VS Code",
+  "description": "DeepSeek Harness внутри IDE: воркспейс по открытой папке, контексты, скилы и правила проекта.",
+  "version": "0.1.0",
+  "publisher": "dsh",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "dsh.newSession",
+        "title": "New Session",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.switchWorkspace",
+        "title": "Switch Workspace",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.reloadContext",
+        "title": "Reload Context",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.openTaskBoard",
+        "title": "Open Task Board",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.stopAgent",
+        "title": "Stop Agent",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.showContextInspector",
+        "title": "Show Context Inspector",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.resumeLastSession",
+        "title": "Resume Last Session",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.openSettings",
+        "title": "Open Settings",
+        "category": "DSH"
+      }
+    ],
+    "configuration": {
+      "title": "DSH",
+      "properties": {
+        "dsh.executablePath": {
+          "type": "string",
+          "default": "dsh",
+          "description": "Путь к бинарю DSH (по умолчанию — `dsh` из PATH)."
+        },
+        "dsh.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Поднимать DSH при открытии воркспейса."
+        },
+        "dsh.defaultModel": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "Модель по умолчанию."
+        },
+        "dsh.sandboxMode": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "enumDescriptions": [
+            "Только чтение, правки запрещены.",
+            "Запись разрешена только внутри воркспейса.",
+            "Без ограничений песочницы."
+          ],
+          "default": "workspace-write",
+          "description": "Sandbox-политика DSH."
+        },
+        "dsh.approvalPolicy": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "auto",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Спрашивать подтверждение перед каждым инструментом.",
+            "Разрешать всё, что не запрещено явно.",
+            "Никогда не подтверждать автоматически."
+          ],
+          "default": "ask",
+          "description": "Политика подтверждений для инструментов агента."
+        },
+        "dsh.context.autoReload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Перезагружать контекст при изменении правил, скилов и манифеста."
+        },
+        "dsh.context.maxBytes": {
+          "type": "number",
+          "default": 262144,
+          "minimum": 1024,
+          "description": "Лимит контекст-пака в байтах."
+        },
+        "dsh.workspace.registryPath": {
+          "type": "string",
+          "default": "~/.dsh/workspaces",
+          "description": "Каталог реестра воркспейсов."
+        },
+        "dsh.kanban.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Показывать доску задач проекта."
+        },
+        "dsh.telemetry.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Телеметрия (по умолчанию выключена)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dsh-vscode/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/vscode": "~1.100.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}
