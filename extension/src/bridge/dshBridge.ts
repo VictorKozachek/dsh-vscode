@@ -46,8 +46,6 @@ import {
 export const DshBridgeErrorCodes = {
   /** Таймаут, недоступный мост, отменённый запрос. */
   bridge: -32000,
-  /** Входящее сообщение не разобрано (не JSON / не по схеме). */
-  parseError: -32700,
   /** Метод не поддерживается клиентом. */
   methodNotFound: -32601
 } as const;
@@ -111,9 +109,13 @@ class JsonRpcPeer {
   readonly #onNotification: (method: string, params: unknown) => void;
   #closed = false;
   #nextId = 1;
+  readonly #onInputError: (error: Error) => void;
+  readonly #onOutputError: (error: Error) => void;
+  readonly #input: Readable;
 
   constructor(options: JsonRpcPeerOptions) {
     this.#output = options.output;
+    this.#input = options.input;
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#log = options.log;
     this.#onNotification = options.onNotification;
@@ -122,9 +124,18 @@ class JsonRpcPeer {
     this.#lines.on('line', (line) => {
       this.#handleLine(line);
     });
-    options.input.on('error', (error: Error) => {
-      this.#log(`поток DSH: ${error.message}`);
-    });
+
+    // Ошибки потоков асинхронные: без слушателей 'error' Node роняет процесс
+    // (EPIPE при записи в умерший процесс, ERR_STREAM_DESTROYED и т. п.).
+    this.#onInputError = (error: Error) => {
+      this.#log(`поток DSH (stdout): ${error.message}`);
+    };
+    this.#onOutputError = (error: Error) => {
+      this.#log(`поток DSH (stdin): ${error.message}`);
+      this.dispose(new DshBridgeError(`поток stdin DSH закрыт: ${error.message}`, { cause: error }));
+    };
+    options.input.on('error', this.#onInputError);
+    options.output.on('error', this.#onOutputError);
   }
 
   /** Отправляет запрос и ждёт результат; таймаут и отмена — на каждой стороне. */
@@ -168,11 +179,6 @@ class JsonRpcPeer {
     });
   }
 
-  /** Уведомление серверу — ответа не ждёт. */
-  notify(method: string, params: unknown): void {
-    this.#write({ jsonrpc: JSONRPC_VERSION, method, params });
-  }
-
   /** Завершает peer: все висящие запросы отклоняются. */
   dispose(reason: Error): void {
     if (this.#closed) {
@@ -180,6 +186,8 @@ class JsonRpcPeer {
     }
     this.#closed = true;
     this.#lines.close();
+    this.#input.removeListener('error', this.#onInputError);
+    this.#output.removeListener('error', this.#onOutputError);
     for (const id of [...this.#pending.keys()]) {
       this.#finish(id, { error: reason });
     }
@@ -280,6 +288,10 @@ class JsonRpcPeer {
       this.#log(`ответ без id: ${clip(rawLine)}`);
       return;
     }
+    if (!this.#pending.has(id)) {
+      this.#log(`ответ на неизвестный запрос id=${String(id)}: ${clip(rawLine)}`);
+      return;
+    }
     if ('error' in message) {
       this.#finish(id, { error: toBridgeError(message['error']) });
       return;
@@ -354,6 +366,7 @@ interface QueuedRequest {
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;
   readonly deadline: number;
+  readonly signal: AbortSignal | undefined;
   removeAbort: (() => void) | undefined;
 }
 
@@ -495,6 +508,8 @@ export class DshBridge {
 
     const child = this.#child;
     this.#child = undefined;
+    this.#stderrReader?.close();
+    this.#stderrReader = undefined;
     this.#peer?.dispose(new DshBridgeError('мост DSH остановлен'));
     this.#peer = undefined;
     this.#rejectQueue(new DshBridgeError('мост DSH остановлен'));
@@ -528,6 +543,9 @@ export class DshBridge {
     }
     this.#processes.clear();
     this.#child = undefined;
+
+    this.#stderrReader?.close();
+    this.#stderrReader = undefined;
 
     this.#peer?.dispose(new DshBridgeError('мост DSH закрыт'));
     this.#peer = undefined;
@@ -592,38 +610,60 @@ export class DshBridge {
       `запущен процесс DSH: ${command.executable} ${command.args.join(' ')} (pid ${String(child.pid)})`
     );
 
+    // spawn может не состояться (нет бинаря, нет cwd, нет прав): без слушателя
+    // 'error' Node валит весь extension host.
+    const started = new Promise<void>((resolve, reject) => {
+      child.once('spawn', () => {
+        resolve();
+      });
+      child.once('error', (error: Error) => {
+        reject(error);
+      });
+    });
+    child.on('error', (error: Error) => {
+      this.#log.appendLine(`процесс DSH: ${describeError(error)}`);
+    });
+
     this.#attachStderr(child);
     child.once('exit', (code, signal) => {
       this.#handleExit(child, code, signal);
     });
 
-    if (child.stdout === null || child.stdin === null) {
-      throw new DshBridgeError('у процесса DSH нет stdio-каналов');
-    }
-
-    const peer = new JsonRpcPeer({
-      input: child.stdout,
-      output: child.stdin,
-      requestTimeoutMs: this.#requestTimeoutMs,
-      log: (message) => {
-        this.#log.appendLine(`[rpc] ${message}`);
-      },
-      onNotification: (method, params) => {
-        this.#emit(method, params);
-      }
-    });
-    this.#peer = peer;
-
+    let spawned = false;
     try {
+      await started;
+      spawned = true;
+
+      if (child.stdout === null || child.stdin === null) {
+        throw new DshBridgeError('у процесса DSH нет stdio-каналов');
+      }
+
+      const peer = new JsonRpcPeer({
+        input: child.stdout,
+        output: child.stdin,
+        requestTimeoutMs: this.#requestTimeoutMs,
+        log: (message) => {
+          this.#log.appendLine(`[rpc] ${message}`);
+        },
+        onNotification: (method, params) => {
+          this.#emit(method, params);
+        }
+      });
+      this.#peer = peer;
+
       await peer.request(WORKSPACE_PING_METHOD, {}, { timeoutMs: this.#healthcheckTimeoutMs });
       this.#log.appendLine('healthcheck DSH пройден (workspace.ping)');
     } catch (error) {
-      peer.dispose(new DshBridgeError('healthcheck не пройден'));
-      if (this.#peer === peer) {
-        this.#peer = undefined;
-      }
       this.#killChild();
-      throw new DshBridgeError(`healthcheck DSH не пройден: ${describeError(error)}`);
+      if (!spawned) {
+        throw new DshBridgeError(
+          `не удалось запустить процесс DSH «${command.executable}»: ${describeError(error)}`,
+          { cause: error }
+        );
+      }
+      throw new DshBridgeError(`healthcheck DSH не пройден: ${describeError(error)}`, {
+        cause: error
+      });
     }
   }
 
@@ -672,6 +712,9 @@ export class DshBridge {
   }
 
   #scheduleRestart(): void {
+    if (this.#disposed || this.#stopRequested) {
+      return;
+    }
     this.#restartAttempts += 1;
     if (this.#restartAttempts > this.#maxRestartAttempts) {
       const error = new DshBridgeError(
@@ -796,6 +839,7 @@ export class DshBridge {
         reject,
         timer,
         deadline,
+        signal,
         removeAbort: undefined
       };
       this.#queue.push(queued);
@@ -835,7 +879,9 @@ export class DshBridge {
         item.reject(new DshBridgeError('мост DSH недоступен'));
         continue;
       }
-      peer.request(item.method, item.params, { timeoutMs }).then(item.resolve, item.reject);
+      peer
+        .request(item.method, item.params, { timeoutMs, signal: item.signal })
+        .then(item.resolve, item.reject);
     }
   }
 

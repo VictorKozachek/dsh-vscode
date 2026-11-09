@@ -39,7 +39,9 @@ const tokens = bridge.on('token', (payload) => append(payload.text));
 | Healthcheck | после spawn — `workspace.ping` с `healthcheckTimeoutMs`; не прошёл — процесс снимается, попытка повторяется |
 | Экспоненциальный backoff | `initialRestartDelayMs` × `restartDelayFactor`, потолок `maxRestartDelayMs`, попыток — `maxRestartAttempts` |
 | Потеря процесса | висящие запросы отклоняются с «процесс DSH завершился (code, signal)», супервизор поднимает новый |
-| Буферизация | запросы, пришедшие в `starting`/`restarting`, ждут процесса и уходят после успешного healthcheck |
+| Отказ spawn | `child.once('error')` + `spawn`: нет бинаря/каталога/прав → `start()` отклоняется с «не удалось запустить процесс DSH «…»», процесс и peer убираются, состояние `failed` (extension host не падает) |
+| Ошибки потоков | на stdin/stdout висят обработчики `error`: EPIPE/`ERR_STREAM_DESTROYED` логируются, peer закрывается, висящие запросы отклоняются |
+| Буферизация | запросы, пришедшие в `starting`/`restarting`, ждут процесса и уходят после успешного healthcheck; `AbortSignal` сохраняется и срабатывает и для буферизованных запросов |
 | Graceful shutdown | `stop()`: SIGTERM → `shutdownGraceMs` → SIGKILL; `dispose()` синхронно снимает процесс и таймеры (`processCount === 0`) |
 | Логи | stdout-мусор, `[rpc]`-ошибки, `[stderr]` процесса — всё в `OutputChannel` «DSH» |
 
@@ -52,11 +54,12 @@ const tokens = bridge.on('token', (payload) => append(payload.text));
 
 `tests/dsh-bridge.test.mjs` — на настоящих процессах фейкового сервера
 `tests/fixtures/fake-dsh-server.mjs` (режимы: нормальный, `no-ping`,
-`crash-once-on-create`, `crash-after-ready`, `exit-immediately`,
+`slow-ping`, `crash-once-on-create`, `crash-after-ready`, `exit-immediately`,
 `ignore-sigterm`, `no-response`, `noisy`, `server-request`). Проверяется:
 healthcheck, корреляция параллельных запросов, события хода, ошибки JSON-RPC,
 таймауты и отмена, падение и перезапуск процесса с отклонением висящих
-запросов, буферизация на время рестарта, отказ от бесконечных ретраев,
+запросов, буферизация на время рестарта, отмена буферизованного запроса,
+отсутствие бинаря и рабочей папки (spawn error), отказ от бесконечных ретраев,
 SIGTERM → SIGKILL, `dispose()` без остатков процессов и таймеров, stderr в логе.
 
 ## Границы

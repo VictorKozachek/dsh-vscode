@@ -5,6 +5,7 @@
  *
  * - `normal` — отвечает на все методы;
  * - `no-ping` — молчит на `workspace.ping` (healthcheck не проходит);
+ * - `slow-ping` — отвечает на `workspace.ping` через 300 мс (окно `starting`);
  * - `crash-after-ready` — отвечает на ping и через 60 мс падает;
  * - `crash-once-on-create` — на первом `session.create` падает, второй процесс
  *   (маркер в `FAKE_DSH_MARKER_FILE`) работает нормально;
@@ -82,6 +83,12 @@ function handleRequest(id, method, params) {
   switch (method) {
     case 'workspace.ping': {
       if (mode === 'no-ping') {
+        return;
+      }
+      if (mode === 'slow-ping') {
+        setTimeout(() => {
+          respond(id, { pong: true, protocolVersion: '0.1.0', workspace });
+        }, 300);
         return;
       }
       respond(id, { pong: true, protocolVersion: '0.1.0', workspace });

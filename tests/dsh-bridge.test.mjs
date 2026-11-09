@@ -230,6 +230,48 @@ test('start(): понятная ошибка, если процесс не по�
   assert.ok(logs.some((line) => line.includes('попытка 1/2')));
 });
 
+test('start(): нет бинаря DSH — понятная ошибка без падения хоста', async (t) => {
+  const { bridge, logs } = createBridge(t, {
+    options: {
+      maxRestartAttempts: 1,
+      commandBuilder: () => ({ executable: '/nonexistent/dsh-binary-xyz', args: [] })
+    }
+  });
+
+  await assert.rejects(
+    bridge.start(),
+    (error) => {
+      assert.ok(error instanceof DshBridgeError);
+      assert.match(error.message, /не удалось запустить процесс DSH/);
+      assert.match(error.message, /dsh-binary-xyz/);
+      return true;
+    }
+  );
+  assert.equal(bridge.state, 'failed');
+  assert.equal(bridge.processCount, 0);
+  assert.ok(logs.some((line) => line.includes('процесс DSH') || line.includes('не удалось поднять DSH')));
+});
+
+test('start(): нет рабочей папки (cwd) — понятная ошибка без падения хоста', async (t) => {
+  const { bridge } = createBridge(t, {
+    options: {
+      maxRestartAttempts: 1,
+      cwd: path.join(os.tmpdir(), 'dsh-bridge-no-such-dir-xyz')
+    }
+  });
+
+  await assert.rejects(
+    bridge.start(),
+    (error) => {
+      assert.ok(error instanceof DshBridgeError);
+      assert.match(error.message, /не удалось запустить процесс DSH/);
+      return true;
+    }
+  );
+  assert.equal(bridge.state, 'failed');
+  assert.equal(bridge.processCount, 0);
+});
+
 test('start(): healthcheck не пройден — мост не считается поднятым', async (t) => {
   const { bridge } = createBridge(t, {
     mode: 'no-ping',
@@ -330,4 +372,28 @@ test('defaultDshCommand: dsh serve с cwd и sandbox', () => {
       args: ['serve', '--protocol=jsonrpc', '--cwd', '/ws', '--sandbox', 'workspace-write']
     }
   );
+});
+
+test('отмена буферизованного запроса срабатывает сразу, а не по таймауту', async (t) => {
+  const { bridge } = createBridge(t, {
+    mode: 'slow-ping',
+    options: { healthcheckTimeoutMs: 2000 }
+  });
+
+  const started = bridge.start(); // не ждём: мост в состоянии "starting"
+  const controller = new AbortController();
+  const request = bridge.request('session.list', {}, { signal: controller.signal, timeoutMs: 5000 });
+  const startedAt = Date.now();
+  setTimeout(() => {
+    controller.abort();
+  }, 40);
+
+  await assert.rejects(request, /отменён/);
+  assert.ok(
+    Date.now() - startedAt < 400,
+    `отмена буферизованного запроса заняла ${String(Date.now() - startedAt)} мс`
+  );
+
+  await started;
+  assert.equal(bridge.state, 'running');
 });
