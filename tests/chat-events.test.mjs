@@ -246,3 +246,84 @@ test('ChatController: dispose снимает подписки и не остав
   bridge.emit('token', { turnId: 'turn_1', text: 'b' });
   assert.deepEqual(posts, [], 'после dispose события игнорируются');
 });
+
+test('ChatController: поздние токены и чужой turn.done игнорируются', async () => {
+  const { bridge, scheduler, posts, controller } = createController();
+  await controller.send('вопрос'); // turnId = turn_1
+  posts.length = 0;
+
+  bridge.emit('token', { turnId: 'turn_old', text: 'старое' });
+  scheduler.runNext();
+  assert.equal(
+    posts.filter((message) => message.type === 'chatToken').length,
+    0,
+    'токен прошлого хода не отправлен'
+  );
+
+  bridge.emit('token', { turnId: 'turn_1', text: 'новое' });
+  scheduler.runNext();
+  assert.equal(
+    posts.filter((message) => message.type === 'chatToken')[0]?.text,
+    'новое'
+  );
+
+  bridge.emit('turn.done', { turnId: 'turn_other', finishReason: 'stop' });
+  assert.equal(
+    posts.filter((message) => message.type === 'chatDone').length,
+    0,
+    'чужой turn.done не закрывает ход'
+  );
+  assert.equal(controller.turnId, 'turn_1');
+  controller.dispose();
+});
+
+test('ChatController: turn.done cancelled оставляет статус cancelled', async () => {
+  const { bridge, posts, controller } = createController();
+  await controller.send('вопрос');
+  posts.length = 0;
+
+  bridge.emit('turn.done', { turnId: 'turn_1', finishReason: 'cancelled' });
+
+  assert.deepEqual(posts.at(-1), { type: 'chatStatus', status: 'cancelled' });
+  assert.equal(controller.status, 'cancelled');
+  controller.dispose();
+});
+
+test('ChatController: отмена во время turn.start гасит уже запущенный ход', async () => {
+  let resolveStart;
+  const bridge = createBridge({
+    handlers: {
+      'turn.start': () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      'turn.cancel': () => ({ cancelled: true })
+    }
+  });
+  const scheduler = createScheduler();
+  const posts = [];
+  const controller = new ChatController({
+    bridge,
+    getSessionId: () => 'sess_1',
+    post: (message) => {
+      posts.push(message);
+    },
+    schedule: scheduler.schedule,
+    cancel: scheduler.cancel
+  });
+
+  const sending = controller.send('вопрос');
+  await controller.cancel(); // turnId ещё null — отмена запоминается
+  resolveStart({ turnId: 'turn_race' });
+  await sending;
+
+  const cancelCall = bridge.calls.find((call) => call.method === 'turn.cancel');
+  assert.deepEqual(cancelCall, {
+    method: 'turn.cancel',
+    params: { sessionId: 'sess_1', turnId: 'turn_race' }
+  });
+  assert.equal(controller.status, 'cancelled');
+  assert.equal(controller.turnId, null);
+  assert.ok(posts.some((message) => message.type === 'chatCancelled'));
+  controller.dispose();
+});

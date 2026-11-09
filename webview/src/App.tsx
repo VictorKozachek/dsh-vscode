@@ -122,8 +122,16 @@ export function App(): ReactElement {
     postToExtension({ type: 'stop' });
   }, []);
 
+  // Эхо-режим каркаса (без ChatController) шлёт chatStatus из ChatSession,
+  // а потоковый — свои статусы; учитываем оба, иначе Stop «залипает».
   const panelStatus: ChatPanelStatus =
-    feed.status === 'streaming' ? 'thinking' : feed.status === 'cancelled' ? 'stopped' : 'idle';
+    feed.status === 'streaming'
+      ? 'thinking'
+      : feed.status === 'cancelled'
+        ? 'stopped'
+        : feed.status === 'error'
+          ? 'stopped'
+          : (panel?.status ?? 'idle');
 
   return (
     <main className="dsh-panel">
@@ -137,7 +145,7 @@ export function App(): ReactElement {
       />
       <MessageList t={t} entries={feed.entries} />
       <Composer t={t} value={draft} onChange={setDraft} onSubmit={send} />
-      <PanelStatus t={t} status={panelStatus} />
+      <PanelStatus t={t} status={panelStatus} streamStatus={feed.status} error={feed.error} />
     </main>
   );
 }

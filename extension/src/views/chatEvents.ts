@@ -159,6 +159,8 @@ export class ChatController {
   readonly #subscriptions: { dispose(): void }[] = [];
   #turnId: string | null = null;
   #status: ChatStreamStatus = 'idle';
+  /** Отмену запросили до того, как turn.start вернул turnId. */
+  #cancelRequested = false;
   #messageCounter = 0;
   #disposed = false;
 
@@ -184,6 +186,14 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('token', (payload) => {
         const token = payload as TokenPayload;
+        // Поздние токены прошлого хода не должны попадать в новый ответ.
+        if (
+          token.turnId !== undefined &&
+          this.#turnId !== null &&
+          token.turnId !== this.#turnId
+        ) {
+          return;
+        }
         if (token.turnId !== undefined && this.#turnId === null) {
           this.#turnId = token.turnId;
         }
@@ -239,13 +249,24 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('turn.done', (payload) => {
         const done = payload as TurnDonePayload;
+        // Старый turn.done не должен закрывать новый ход.
+        if (
+          done.turnId !== undefined &&
+          this.#turnId !== null &&
+          done.turnId !== this.#turnId
+        ) {
+          return;
+        }
         this.#batcher.flush();
         this.#turnId = null;
-        this.#status = done.finishReason === 'error' ? 'error' : 'idle';
+        this.#cancelRequested = false;
+        const finishReason = done.finishReason ?? 'stop';
+        this.#status =
+          finishReason === 'cancelled' ? 'cancelled' : finishReason === 'error' ? 'error' : 'idle';
         this.#post({
           type: 'chatDone',
           turnId: done.turnId ?? '',
-          finishReason: done.finishReason ?? 'stop'
+          finishReason
         });
         this.#post({ type: 'chatStatus', status: this.#status });
       })
@@ -288,6 +309,7 @@ export class ChatController {
     if (sessionId === null) {
       throw new ChatControllerError('нет активной сессии DSH');
     }
+    this.#cancelRequested = false;
 
     this.#messageCounter += 1;
     this.#post({
@@ -301,6 +323,18 @@ export class ChatController {
         input: trimmed
       })) as { turnId?: string };
       this.#turnId = result.turnId ?? null;
+
+      // Отмену нажали, пока шёл turn.start: ход уже запущен — гасим его.
+      if (this.#cancelRequested) {
+        await this.#requestCancel(sessionId);
+        this.#cancelRequested = false;
+        this.#turnId = null;
+        this.#status = 'cancelled';
+        this.#post({ type: 'chatCancelled' });
+        this.#post({ type: 'chatStatus', status: 'cancelled' });
+        return;
+      }
+
       this.#status = 'streaming';
       this.#post({ type: 'chatStatus', status: 'streaming' });
     } catch (error) {
@@ -320,14 +354,12 @@ export class ChatController {
   /** Отмена хода (`turn.cancel`): поток останавливается, сообщение помечается. */
   async cancel(): Promise<void> {
     const sessionId = this.#getSessionId();
-    const turnId = this.#turnId;
-    if (sessionId !== null && turnId !== null) {
-      try {
-        await this.#bridge.request('turn.cancel', { sessionId, turnId });
-      } catch (error) {
-        this.#log(
-          `ChatController: turn.cancel не удался: ${error instanceof Error ? error.message : String(error)}`
-        );
+    if (sessionId !== null) {
+      if (this.#turnId !== null) {
+        await this.#requestCancel(sessionId);
+      } else {
+        // Ход ещё стартует: запомним отмену, send погасит его после turn.start.
+        this.#cancelRequested = true;
       }
     }
     this.#batcher.flush();
@@ -335,6 +367,20 @@ export class ChatController {
     this.#status = 'cancelled';
     this.#post({ type: 'chatCancelled' });
     this.#post({ type: 'chatStatus', status: 'cancelled' });
+  }
+
+  async #requestCancel(sessionId: string): Promise<void> {
+    const turnId = this.#turnId;
+    if (turnId === null) {
+      return;
+    }
+    try {
+      await this.#bridge.request('turn.cancel', { sessionId, turnId });
+    } catch (error) {
+      this.#log(
+        `ChatController: turn.cancel не удался: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   /** Снимает подписки на мост и очищает батчер. */
@@ -347,6 +393,7 @@ export class ChatController {
       subscription.dispose();
     }
     this.#subscriptions.length = 0;
+    this.#cancelRequested = false;
     this.#batcher.dispose();
   }
 }

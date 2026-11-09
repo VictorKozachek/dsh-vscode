@@ -109,9 +109,12 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
   чтобы хвост токенов не терялся;
 - `dispose()` снимает подписки на мост и таймер батчера — утечек listener'ов нет.
 
-Провайдер панели принимает `chat?: ChatController`: при наличии он заменяет
-эхо-режим каркаса, иначе панель работает как раньше. Проводка контроллера к
-реальному `DshBridge` и `SessionManager` — #011 (в активации расширения).
+Провайдер панели принимает `chat?: ChatController`: маршрутизацию сообщений
+делает `chatDispatch.ts` (модуль без `vscode`, покрыт тестами): при наличии
+контроллера `sendMessage` → `chat.send`, `stop` → `chat.cancel`, ошибки уходят в
+панель как `chatStatus: error`, иначе — эхо-режим каркаса (#005). Провайдер
+владеет контроллером: `dispose()` снимает его подписки на мост. Проводка
+контроллера к реальному `DshBridge` и `SessionManager` — #011.
 
 Контракт сообщений расширен в `chatHtml.ts` (`chatStatus`, `chatToken`,
 `chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`); паритет с

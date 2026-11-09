@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 
 import type { ChatController } from './chatEvents';
+import { dispatchWebviewMessage } from './chatDispatch';
 import {
   ChatSession,
   buildChatViewHtml,
@@ -118,6 +119,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   dispose(): void {
     this.#disposed = true;
     this.#session.dispose();
+    // Панель владеет контроллером: подписки на мост снимаются вместе с ней.
+    this.#options.chat?.dispose();
     this.#view = undefined;
   }
 
@@ -161,12 +164,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const emitted = (outgoing: ExtensionMessage): void => {
-      void this.postMessage(outgoing);
-    };
-    for (const outgoing of this.#session.handle(message, () => this.#options.state(), emitted)) {
-      await this.postMessage(outgoing);
-    }
+    await dispatchWebviewMessage(message, {
+      chat: this.#options.chat,
+      session: this.#session,
+      state: () => this.#options.state(),
+      post: (outgoing) => this.postMessage(outgoing),
+      log: (line) => this.#options.log?.(line)
+    });
   }
 
 }

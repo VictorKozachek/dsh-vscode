@@ -166,3 +166,55 @@ test('автоскролл: только у нижней границы', () => 
     'контент короче окна — скроллить некуда'
   );
 });
+
+test('лента: поздние токены и чужой turn.done не портят текущий ответ', () => {
+  let current = chatFeedReducer(state(), { type: 'token', turnId: 'turn_1', text: 'один' });
+  const lateToken = chatFeedReducer(current, { type: 'token', turnId: 'turn_old', text: 'старое' });
+
+  assert.equal(lateToken, current, 'токен другого хода игнорируется');
+  assert.equal(lateToken.entries[0]?.text, 'один');
+
+  const lateDone = chatFeedReducer(current, { type: 'done', turnId: 'turn_old', finishReason: 'stop' });
+  assert.equal(lateDone, current, 'чужой turn.done не закрывает текущий ход');
+});
+
+test('лента: done cancelled оставляет статус cancelled', () => {
+  let current = chatFeedReducer(state(), { type: 'token', turnId: 'turn_1', text: 'ответ' });
+  current = chatFeedReducer(current, { type: 'done', turnId: 'turn_1', finishReason: 'cancelled' });
+
+  assert.equal(current.status, 'cancelled');
+  assert.equal(current.entries[0]?.state, 'cancelled');
+});
+
+test('лента: после отмены tool-события игнорируются, running-вызовы прерываются', () => {
+  let current = chatFeedReducer(state(), { type: 'token', turnId: 'turn_1', text: 'думаю' });
+  current = chatFeedReducer(current, {
+    type: 'toolCall',
+    callId: 'call_1',
+    name: 'read_file',
+    arguments: {},
+    at: 10
+  });
+  current = chatFeedReducer(current, { type: 'cancelled' });
+
+  const call = current.entries[0]?.toolCalls[0];
+  assert.equal(call?.status, 'error', 'незавершённый вызов помечен ошибкой');
+  assert.equal(call?.error, 'cancelled');
+
+  const lateCall = chatFeedReducer(current, {
+    type: 'toolCall',
+    callId: 'call_2',
+    name: 'late',
+    arguments: {},
+    at: 20
+  });
+  assert.equal(lateCall, current, 'tool.call после отмены игнорируется');
+
+  const lateResult = chatFeedReducer(current, {
+    type: 'toolResult',
+    callId: 'call_1',
+    ok: true,
+    at: 30
+  });
+  assert.equal(lateResult, current, 'tool.result после отмены игнорируется');
+});

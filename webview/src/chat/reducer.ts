@@ -136,6 +136,9 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
       if (state.status === 'cancelled' || state.status === 'error') {
         return state;
       }
+      if (state.turnId !== null && event.turnId !== state.turnId) {
+        return state; // поздний токен прошлого хода
+      }
       const entries = [...state.entries];
       const lastIndex = entries.length - 1;
       const last = entries[lastIndex];
@@ -154,6 +157,9 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
     }
 
     case 'toolCall': {
+      if (state.status === 'cancelled' || state.status === 'error') {
+        return state;
+      }
       const entries = [...state.entries];
       const lastIndex = entries.length - 1;
       const last = entries[lastIndex];
@@ -179,6 +185,9 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
     }
 
     case 'toolResult': {
+      if (state.status === 'cancelled' || state.status === 'error') {
+        return state;
+      }
       const at = event.at ?? Date.now();
       const entries = state.entries.map((entry) => {
         if (!entry.toolCalls.some((call) => call.id === event.callId)) {
@@ -204,6 +213,9 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
     }
 
     case 'done': {
+      if (state.turnId !== null && event.turnId !== state.turnId) {
+        return state; // старый turn.done не закрывает новый ход
+      }
       const entryState: ChatEntryStatus =
         event.finishReason === 'error'
           ? 'error'
@@ -213,9 +225,20 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
       return {
         ...state,
         entries: state.entries.map((entry) =>
-          entry.state === 'streaming' ? { ...entry, state: entryState } : entry
+          entry.state === 'streaming'
+            ? {
+                ...entry,
+                state: entryState,
+                toolCalls: interruptRunningCalls(entry.toolCalls, entryState)
+              }
+            : entry
         ),
-        status: event.finishReason === 'error' ? 'error' : 'idle',
+        status:
+          event.finishReason === 'error'
+            ? 'error'
+            : event.finishReason === 'cancelled'
+              ? 'cancelled'
+              : 'idle',
         turnId: null
       };
     }
@@ -224,7 +247,13 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
       return {
         ...state,
         entries: state.entries.map((entry) =>
-          entry.state === 'streaming' ? { ...entry, state: 'cancelled' } : entry
+          entry.state === 'streaming'
+            ? {
+                ...entry,
+                state: 'cancelled',
+                toolCalls: interruptRunningCalls(entry.toolCalls, 'cancelled')
+              }
+            : entry
         ),
         status: 'cancelled',
         turnId: null
@@ -235,7 +264,13 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
       return {
         ...state,
         entries: state.entries.map((entry) =>
-          entry.state === 'streaming' ? { ...entry, state: 'error' } : entry
+          entry.state === 'streaming'
+            ? {
+                ...entry,
+                state: 'error',
+                toolCalls: interruptRunningCalls(entry.toolCalls, event.message)
+              }
+            : entry
         ),
         status: 'error',
         turnId: null,
@@ -272,4 +307,16 @@ export function shouldAutoScroll(input: AutoScrollInput): boolean {
   }
   const distanceFromBottom = input.scrollHeight - input.scrollTop - input.clientHeight;
   return distanceFromBottom <= threshold;
+}
+
+/** Прерванные вызовы инструментов: pending-статус не должен «висеть». */
+function interruptRunningCalls(
+  calls: readonly ToolCallState[],
+  reason: string
+): readonly ToolCallState[] {
+  return calls.map((call) =>
+    call.status === 'running'
+      ? { ...call, status: 'error', error: reason }
+      : call
+  );
 }
