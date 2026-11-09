@@ -992,9 +992,18 @@ export class ContextLoader {
       return null;
     }
     const relative = normalizeRelativePath(manifest.memory.path ?? '.dsh/memory');
+
+    // Та же проверка, что у rules/skills: пустой путь, выход за воркспейс,
+    // секретный/служебный путь (в том числе через симлинк внутри root),
+    // не-каталог. Иначе предупреждение говорило бы одно, а пак читал другое.
+    const rejection = await this.#manifestPathRejection(relative, 'directory');
+    if (rejection !== null) {
+      this.#log(`ContextLoader: memory.path «${relative}» ${rejection} — память не читается`);
+      return null;
+    }
+
     const absolute = await this.#resolveInsideRoot(relative);
-    if (absolute === null || this.#isForbiddenManifestPath(relative)) {
-      this.#log(`ContextLoader: memory.path «${relative}» вне воркспейса или служебный — память не читается`);
+    if (absolute === null) {
       return null;
     }
     return { absolute, relative };

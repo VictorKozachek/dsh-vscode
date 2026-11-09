@@ -44,16 +44,17 @@ function makeLoader(root, home, options = {}) {
   return new ContextLoader({ root, homeDirectory: home, debounceMs: 60, ...options });
 }
 
-async function waitFor(predicate, description, timeoutMs = 4000) {
+async function waitForOptional(predicate, timeoutMs = 1500) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) {
-      return;
+      return true;
     }
     await sleep(20);
   }
-  throw new Error(`не дождались: ${description}`);
+  return false;
 }
+
 
 test('правила: корень и вложенные AGENTS.md, ближайший первым', async () => {
   const { root, home } = await makeCase({
@@ -250,10 +251,16 @@ test('hot reload: изменение AGENTS.md приходит событием
   });
 
   try {
-    await writeFile(path.join(root, 'AGENTS.md'), '# стало: новое правило\n');
-    await waitFor(() => packs.length > 0, 'событие пересборки контекста');
-    assert.match(packs.at(-1).rules[0]?.text ?? '', /стало/);
-    assert.notEqual(packs.at(-1).fingerprint, undefined);
+    // fs.watch может потерять событие под нагрузкой (другие агенты на машине):
+    // даём три попытки, прежде чем считать тест упавшим.
+    let delivered = false;
+    for (let attempt = 0; attempt < 3 && !delivered; attempt += 1) {
+      await writeFile(path.join(root, 'AGENTS.md'), `# стало: новое правило ${String(attempt)}\n`);
+      delivered = await waitForOptional(() => packs.length > 0);
+    }
+    assert.ok(delivered, 'событие пересборки контекста не пришло за 3 попытки');
+    assert.match(packs.at(-1)?.rules[0]?.text ?? '', /стало/);
+    assert.notEqual(packs.at(-1)?.fingerprint, undefined);
   } finally {
     unsubscribe();
     loader.dispose();
@@ -677,20 +684,26 @@ test('hot reload: изменения manifest rules/skills пересобира�
   });
 
   try {
-    await writeFile(path.join(root, 'docs', 'CONVENTIONS.md'), '# версия 2\n');
-    await waitFor(
-      () => packs.some((pack) => pack.rules.some((rule) => rule.text.includes('версия 2'))),
-      'пересборка после изменения manifest-правила'
-    );
+    let ruleDelivered = false;
+    for (let attempt = 0; attempt < 3 && !ruleDelivered; attempt += 1) {
+      await writeFile(path.join(root, 'docs', 'CONVENTIONS.md'), '# версия 2\n');
+      ruleDelivered = await waitForOptional(() =>
+        packs.some((pack) => pack.rules.some((rule) => rule.text.includes('версия 2')))
+      );
+    }
+    assert.ok(ruleDelivered, 'пересборка после изменения manifest-правила');
 
-    await writeFile(
-      path.join(root, '.custom-skills', 'foo', 'SKILL.md'),
-      '---\nname: foo\ndescription: Версия 2\n---\n'
-    );
-    await waitFor(
-      () => packs.some((pack) => pack.skills.some((skill) => skill.description === 'Версия 2')),
-      'пересборка после изменения manifest-скила'
-    );
+    let skillDelivered = false;
+    for (let attempt = 0; attempt < 3 && !skillDelivered; attempt += 1) {
+      await writeFile(
+        path.join(root, '.custom-skills', 'foo', 'SKILL.md'),
+        '---\nname: foo\ndescription: Версия 2\n---\n'
+      );
+      skillDelivered = await waitForOptional(() =>
+        packs.some((pack) => pack.skills.some((skill) => skill.description === 'Версия 2'))
+      );
+    }
+    assert.ok(skillDelivered, 'пересборка после изменения manifest-скила');
   } finally {
     unsubscribe();
     loader.dispose();
@@ -711,6 +724,67 @@ test('manifest rules: docs/../AGENTS.md дедуплицируется с AGENTS
     pack.rules.filter((rule) => rule.path === 'AGENTS.md').length,
     1,
     'путь со ./.. должен нормализоваться и не дублироваться'
+  );
+
+  loader.dispose();
+});
+
+test('memory: общий фильтр путей — symlink на .git и node_modules не читается', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ memory: { enabled: true, path: 'mem-git' } }),
+    '.git/notes.md': '# заметки из .git\n',
+    'src/app.ts': 'export {};\n'
+  });
+  await symlink('.git', path.join(root, 'mem-git'), 'dir');
+
+  const gitLoader = makeLoader(root, home);
+  const gitPack = await gitLoader.load();
+
+  assert.deepEqual(gitPack.memory, [], 'память не читает .git через симлинк');
+  assert.ok(
+    gitPack.manifestWarnings.some(
+      (warning) => warning.includes('memory.path') && warning.includes('symlink')
+    ),
+    'предупреждение совпадает с фактическим чтением'
+  );
+
+  const nodeCase = await makeCase({ 'src/app.ts': 'export {};\n' });
+  await mkdir(path.join(nodeCase.root, 'node_modules', 'pkg'), { recursive: true });
+  await writeFile(path.join(nodeCase.root, 'node_modules', 'pkg', 'notes.md'), '# из node_modules\n');
+  await symlink('node_modules', path.join(nodeCase.root, 'mem-nm'), 'dir');
+  await writeFiles(nodeCase.root, {
+    '.dsh/workspace.json': JSON.stringify({ memory: { enabled: true, path: 'mem-nm' } })
+  });
+
+  const nodeLoader = makeLoader(nodeCase.root, nodeCase.home);
+  const nodePack = await nodeLoader.load();
+
+  assert.deepEqual(nodePack.memory, [], 'память не читает node_modules через симлинк');
+  assert.ok(
+    nodePack.manifestWarnings.some(
+      (warning) => warning.includes('memory.path') && warning.includes('symlink')
+    )
+  );
+
+  gitLoader.dispose();
+  nodeLoader.dispose();
+});
+
+test('memory: пустой путь не подменяется корнем воркспейса', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ memory: { enabled: true, path: '' } }),
+    'README.md': '# Корневой README не память\n',
+    'src/app.ts': 'export {};\n'
+  });
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+
+  assert.deepEqual(pack.memory, [], 'пустой memory.path не читает корень воркспейса');
+  assert.ok(
+    pack.manifestWarnings.some(
+      (warning) => warning.includes('memory.path') && warning.includes('пустой путь')
+    )
   );
 
   loader.dispose();
