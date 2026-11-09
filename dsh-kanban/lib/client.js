@@ -1,0 +1,1840 @@
+/**
+ * Браузерная половина плагина `dsh-kanban` — доска агентских задач в правом
+ * сайдбаре.
+ *
+ * Формат файла: классический скрипт-обёртка `window.__ModuleLoader__.load`,
+ * который ядро DSH материализует лениво (`factory(require)` → exports). React
+ * берётся из базовой таблицы модулей оболочки, поэтому `dsh.client.external`
+ * не нужен, а сборщик — тоже: файл написан руками, без JSX.
+ *
+ * Данные: каталог `.kanban/tasks/*.md` в рабочей директории сессии. Читаем
+ * через уже существующий Remote `workspaceFiles` (он read-only), поэтому
+ * карточки двигают агенты обычными файловыми инструментами, а доска только
+ * показывает состояние и опрашивает его раз в POLL_MS.
+ */
+window.__ModuleLoader__.load({
+  id: "dsh-kanban",
+  factory: (require) => {
+    var module = { exports: {} };
+    var exports = module.exports;
+
+    const React = require("react");
+    const h = React.createElement;
+
+    /** Идентификатор типа таба; он же ключ регистрации тела и заголовка. */
+    const ID = "dsh-kanban";
+    /** Дискриминатор типа: то, что называет `openTab`. */
+    const KIND = "kanban";
+    /** Пространство имён локали. */
+    const NS = "kanban";
+    /** Где лежат карточки, относительно рабочей директории сессии. */
+    const TASKS_DIR = ".kanban/tasks";
+    /** Манифест карточек открытых задач из worktree (пишет bin/board-sync.sh). */
+    const MANIFEST_FILE = ".kanban/worktrees.json";
+    /**
+     * Каталоги рабочих деревьев задач внутри проекта. `worktrees` — основной
+     * (видимый: путь выбирают руками в диалоге выбора папки), `.worktrees` —
+     * поддержка прежних раскладок.
+     */
+    const WORKTREES_DIRS = ["worktrees", ".worktrees"];
+    /** Период опроса: фид изменений не видит записи из bash и редактора. */
+    const POLL_MS = 3000;
+    /** Сколько строк карточки читать (front matter + тело задачи). */
+    const MAX_LINES = 400;
+
+    /**
+     * Колонки доски в порядке показа.
+     *
+     * `backlog` — лог нарезанных заранее задач: карточки там лежат без владельца,
+     * пока оркестратор не выдаст их в `todo`. Поэтому он первый и нейтральный
+     * (слейт), а `todo` сдвинут на розовый, чтобы очередь не сливалась с логом.
+     */
+    const COLUMNS = [
+      { id: "backlog", color: "#94a3b8" },
+      { id: "todo", color: "#ec4899" },
+      { id: "in-progress", color: "#3b82f6" },
+      { id: "in-review", color: "#06b6d4" },
+      { id: "testing", color: "#f59e0b" },
+      { id: "ready", color: "#8b5cf6" },
+      { id: "merged", color: "#22c55e" },
+      { id: "blocked", color: "#ef4444" }
+    ];
+    const COLUMN_IDS = COLUMNS.map((column) => column.id);
+    const COLUMN_BY_ID = {};
+    for (const column of COLUMNS) COLUMN_BY_ID[column.id] = column;
+
+    /**
+     * Синонимы статусов: и английские, и русские, чтобы агенты не спотыкались.
+     * `backlog` синонимом не записан: это отдельная колонка, и `normalizeStatus`
+     * возвращает её как есть.
+     */
+    const STATUS_ALIASES = {
+      todo: "todo",
+      new: "todo",
+      "нужно-сделать": "todo",
+      "in-progress": "in-progress",
+      in_progress: "in-progress",
+      progress: "in-progress",
+      wip: "in-progress",
+      doing: "in-progress",
+      active: "in-progress",
+      "в-работе": "in-progress",
+      "in-review": "in-review",
+      in_review: "in-review",
+      inreview: "in-review",
+      "code-review": "in-review",
+      reviewing: "in-review",
+      "на-ревью": "in-review",
+      "ревью": "in-review",
+      testing: "testing",
+      review: "in-review",
+      test: "testing",
+      verify: "testing",
+      "на-проверке": "testing",
+      "тестирование": "testing",
+      ready: "ready",
+      "ready-to-merge": "ready",
+      done: "ready",
+      "готово": "ready",
+      merged: "merged",
+      "влито": "merged",
+      "слито": "merged",
+      closed: "merged",
+      blocked: "blocked",
+      hold: "blocked",
+      "заблокировано": "blocked"
+    };
+
+    /** Расход по ролям: плоские поля `tokens_<роль>` из front matter. */
+    function usageFrom(data) {
+      const usage = {};
+      for (const [key, value] of Object.entries(data)) {
+        const match = /^tokens_([a-z]+)$/.exec(key);
+        if (match && String(value) !== "") usage[match[1]] = String(value);
+      }
+      return usage;
+    }
+
+    /** Компактная запись числа: 1234 → «1,2k», 12345678 → «12,3M». */
+    function formatTokens(value) {
+      const number = Number(String(value).replace(/\s+/g, ""));
+      if (!isFinite(number) || number <= 0) return String(value);
+      const short = (scaled, suffix) =>
+        scaled.toFixed(scaled < 10 ? 1 : 0).replace(".", ",") + suffix;
+      if (number < 1000) return String(number);
+      if (number < 1000000) return short(number / 1000, "k");
+      if (number < 1000000000) return short(number / 1000000, "M");
+      return short(number / 1000000000, "G");
+    }
+
+    /** Привести произвольный статус карточки к идентификатору колонки. */
+    function normalizeStatus(raw) {
+      const value = String(raw == null ? "" : raw).trim().toLowerCase().replace(/\s+/g, "-");
+      if (value === "") return "todo";
+      if (STATUS_ALIASES[value]) return STATUS_ALIASES[value];
+      return COLUMN_IDS.indexOf(value) >= 0 ? value : "todo";
+    }
+
+    /** Разобрать YAML-front-matter карточки (плоские `key: value`, вложенность не нужна). */
+    function parseFrontMatter(text) {
+      const data = {};
+      let body = text || "";
+      const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/.exec(body);
+      if (!match) return { data, body };
+      body = body.slice(match[0].length);
+      for (const line of match[1].split(/\r?\n/)) {
+        if (/^\s*#/.test(line)) continue;
+        const cut = line.indexOf(":");
+        if (cut <= 0) continue;
+        const key = line.slice(0, cut).trim();
+        let value = line.slice(cut + 1).trim();
+        if (value.length >= 2) {
+          const first = value[0];
+          const last = value[value.length - 1];
+          if ((first === '"' && last === '"') || (first === "'" && last === "'")) value = value.slice(1, -1);
+        }
+        if (value === "~" || value === "null") value = "";
+        if (key !== "") data[key] = value;
+      }
+      return { data, body };
+    }
+
+    /** Статус, записанный в теле карточки строкой «Статус: review». */
+    function statusFromBody(body) {
+      const match = /(?:^|\n)\s*(?:\*\*)?(?:Статус|Status)(?:\*\*)?\s*[:：]\s*(?:\*\*)?([^\s*]+)/.exec(body || "");
+      return match ? match[1] : "";
+    }
+
+    /** Первый заголовок тела — запасное имя карточки, если нет `title`. */
+    function titleFromBody(body) {
+      const match = /^[ \t]*#[ \t]+(.+?)[ \t]*$/m.exec(body || "");
+      return match ? match[1] : "";
+    }
+
+    /** Собрать карточку из имени файла и его текста. */
+    /**
+     * Разделить тело карточки на описание и комментарии ролей.
+     *
+     * Разбираем построчно, а не регуляркой с ленивой группой: при флаге `m` знак `$`
+     * совпадает с концом любой строки, и такой группой текст обрывался на первом
+     * переносе — многоабзацные описания и комментарии терялись почти целиком.
+     *
+     * Описание — строки под заголовком «## Задача» (иначе всё до первого раздела).
+     * Комментарий — блок от строки `- <ISO-дата> [<статус>]` до следующей такой же.
+     */
+    function splitCardBody(rawBody) {
+      const lines = String(rawBody || "").replace(/\r\n/g, "\n").split("\n");
+      const comments = [];
+      let current = null;
+      for (const line of lines) {
+        const start = /^-\s*(\d{4}-\d{2}-\d{2}T[\d:]+Z?)\s*\[([^\]]+)\]\s*(.*)$/.exec(line);
+        if (start) {
+          if (current) comments.push(current);
+          current = { at: start[1], status: start[2].trim(), lines: start[3] ? [start[3]] : [] };
+          continue;
+        }
+        if (current) {
+          // Комментарий закрывают: раздел карточки («## Сделано», «## Раунд 2» — это
+          // отчёты, а не текст роли) и первая непустая строка без отступа — писатель
+          // (bin/task-move.sh) сдвигает строки заметки на два пробела, поэтому
+          // неподступленная строка это уже проза карточки.
+          if (/^##\s/.test(line) || (line.trim() !== "" && !/^\s/.test(line))) {
+            comments.push(current);
+            current = null;
+            continue;
+          }
+          current.lines.push(line);
+        }
+      }
+      if (current) comments.push(current);
+      for (const comment of comments) {
+        // Отступ записи (два пробела от писателя) убираем: в панели текст должен
+        // читаться как обычный.
+        comment.text = comment.lines
+          .map((line) => line.replace(/^ {1,2}/, ""))
+          .join("\n")
+          .trim();
+        delete comment.lines;
+      }
+
+      const hasTaskSection = lines.some((line) => /^##\s*Задача\s*$/.test(line));
+      const description = [];
+      if (hasTaskSection) {
+        let inside = false;
+        for (const line of lines) {
+          if (/^##\s/.test(line)) {
+            inside = /^##\s*Задача\s*$/.test(line);
+            continue;
+          }
+          if (inside) description.push(line);
+        }
+      } else {
+        for (const line of lines) {
+          if (/^##\s/.test(line)) break;
+          description.push(line);
+        }
+      }
+      return {
+        description: description
+          .filter((line) => !/^\s*-\s*\d{4}-\d{2}-\d{2}T/.test(line))
+          .join("\n")
+          .trim(),
+        comments
+      };
+    }
+
+    function parseCard(fileName, text) {
+      const parsed = parseFrontMatter(text);
+      const data = parsed.data;
+      const fromName = (fileName.match(/^(\d+)/) || [])[1];
+      const bare = fileName.replace(/\.md$/i, "");
+      return {
+        key: fileName,
+        file: TASKS_DIR + "/" + fileName,
+        id: String(data.id || fromName || bare),
+        title: String(data.title || titleFromBody(parsed.body) || bare),
+        status: normalizeStatus(data.status || data.state || statusFromBody(parsed.body)),
+        owner: String(data.owner || data.assignee || data.agent || ""),
+        role: String(data.role || data.actor || ""),
+        spec: String(data.spec || ""),
+        tokens: String(data.tokens || ""),
+        since: String(data.since || ""),
+        usage: usageFrom(data),
+        branch: String(data.branch || ""),
+        worktree: String(data.worktree || ""),
+        updated: String(data.updated || data.updatedAt || ""),
+        note: String(data.blocked || data.note || data.reason || ""),
+        body: parsed.body,
+        ...splitCardBody(parsed.body)
+      };
+    }
+
+    /**
+     * Обрезать длинный текст для карточки: заметка может быть отчётом на
+     * несколько килобайт, а на доске ей хватает двух строк. Полный текст
+     * остаётся в атрибуте title и в самой карточке в репозитории.
+     */
+    function clampText(value, limit) {
+      const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+      if (text.length <= limit) return text;
+      return text.slice(0, limit - 1).replace(/[\s,;:.]+$/, "") + "…";
+    }
+
+    /** Человекочитаемое описание ошибки Remote. */
+    function describeError(error) {
+      if (!error) return "unknown";
+      if (typeof error === "string") return error;
+      const code = error.code ? String(error.code) : "";
+      const message = error.message ? String(error.message) : "";
+      if (code && message) return code + ": " + message;
+      if (message) return message;
+      if (code) return code;
+      try {
+        return JSON.stringify(error);
+      } catch (ignored) {
+        return String(error);
+      }
+    }
+
+    /**
+     * Прочитать манифест worktree. Любая проблема (нет файла, битый JSON,
+     * ошибка Remote) означает просто «открытых карточек из веток нет»: доска
+     * обязана работать и без манифеста.
+     */
+    async function readManifest(remote, sessionId, signal) {
+      let result;
+      try {
+        result = await remote.workspaceFiles.read(sessionId, MANIFEST_FILE, { limit: 200 }, signal);
+      } catch (error) {
+        return [];
+      }
+      if (!result || result.ok !== true) return [];
+      try {
+        const parsed = JSON.parse((result.value || {}).text || "");
+        const list = parsed && Array.isArray(parsed.cards) ? parsed.cards : [];
+        return list.filter((item) => typeof item === "string" && item.length > 0);
+      } catch (error) {
+        return [];
+      }
+    }
+
+    /**
+     * Карточки задач из рабочих деревьев внутри проекта:
+     * `.worktrees/<id>/.kanban/tasks/*.md`. Обход идёт по workspace, поэтому
+     * работает и без манифеста — тот нужен только для worktree за его пределами.
+     */
+    async function listWorktreeCards(remote, sessionId, signal) {
+      const paths = [];
+      for (const root of WORKTREES_DIRS) {
+        await collectWorktreeCards(remote, sessionId, signal, root, paths);
+      }
+      return paths;
+    }
+
+    /** Обход одного каталога рабочих деревьев. */
+    async function collectWorktreeCards(remote, sessionId, signal, worktreesDir, paths) {
+      let listing;
+      try {
+        listing = await remote.workspaceFiles.list(sessionId, worktreesDir, signal);
+      } catch (error) {
+        return;
+      }
+      if (!listing || listing.ok !== true) return;
+      for (const entry of (listing.value && listing.value.entries) || []) {
+        if (!entry || entry.type !== "directory") continue;
+        const name = String(entry.name || "");
+        if (name === "") continue;
+        const dir = worktreesDir + "/" + name;
+        let tasks;
+        try {
+          tasks = await remote.workspaceFiles.list(sessionId, dir + "/" + TASKS_DIR, signal);
+        } catch (error) {
+          continue;
+        }
+        if (!tasks || tasks.ok !== true) continue;
+        for (const file of (tasks.value && tasks.value.entries) || []) {
+          if (!file || file.type !== "file") continue;
+          const file_name = String(file.name || "");
+          if (!/\.md$/i.test(file_name)) continue;
+          if (/^readme\.md$/i.test(file_name)) continue;
+          // Worktree ветвится от основной ветки и наследует все её карточки.
+          // Живая карточка задачи — только одноимённая с рабочим деревом:
+          // остальные уже представлены копией из основного чекаута.
+          if (file_name.replace(/\.md$/i, "") !== name) continue;
+          paths.push(dir + "/" + TASKS_DIR + "/" + file_name);
+        }
+      }
+    }
+
+    /** Имя файла из абсолютного пути. */
+    function basenameOf(path) {
+      const parts = String(path).split(/[\\/]/);
+      return parts[parts.length - 1] || String(path);
+    }
+
+    /**
+     * Какая запись свежее. Сравниваем `updated` (ISO-строки сравнимы
+     * лексикографически); при равенстве выигрывает карточка из ветки — она
+     * живая, а копия в основном чекауте могла остаться от прошлого слияния.
+     */
+    function isNewer(candidate, current) {
+      const left = String(candidate.updated || "");
+      const right = String(current.updated || "");
+      if (left && right) return left === right ? candidate.source === "worktree" : left > right;
+      if (left) return true;
+      if (right) return false;
+      return candidate.source === "worktree";
+    }
+
+    /** Порядок карточек на доске — по id. */
+    function compareCards(left, right) {
+      return String(left.id).localeCompare(String(right.id), "ru");
+    }
+
+    /**
+     * Читатель доски: перечисляет `.kanban/tasks`, читает каждую `.md`-карточку,
+     * дочитывает манифест worktree и сливает записи по id. Ничего не пишет —
+     * Remote этого не умеет.
+     */
+    function createLoader(remote) {
+      return async function loadBoard(sessionId, signal) {
+        if (!remote || !remote.workspaceFiles) {
+          return { ok: false, error: "workspaceFiles Remote недоступен" };
+        }
+        let listing;
+        try {
+          listing = await remote.workspaceFiles.list(sessionId, TASKS_DIR, signal);
+        } catch (error) {
+          return { ok: false, error: describeError(error) };
+        }
+        if (!listing || listing.ok !== true) {
+          return { ok: false, error: describeError(listing ? listing.error : null) };
+        }
+        const value = listing.value || {};
+        const files = [];
+        for (const entry of value.entries || []) {
+          if (!entry || entry.type !== "file") continue;
+          const name = String(entry.name || "");
+          if (!/\.md$/i.test(name)) continue;
+          if (/^readme\.md$/i.test(name)) continue;
+          files.push(name);
+        }
+        files.sort();
+        const cards = [];
+        const problems = [];
+        for (const name of files) {
+          let result;
+          try {
+            result = await remote.workspaceFiles.read(sessionId, TASKS_DIR + "/" + name, { limit: MAX_LINES }, signal);
+          } catch (error) {
+            problems.push(name + ": " + describeError(error));
+            continue;
+          }
+          if (result && result.ok === true) {
+            const card = parseCard(name, (result.value || {}).text);
+            card.source = "main";
+            cards.push(card);
+          } else {
+            problems.push(name + ": " + describeError(result ? result.error : null));
+          }
+        }
+
+        // Открытые задачи живут в ветках (worktree). Находим их обходом
+        // .worktrees/ внутри проекта и — для worktree за его пределами — по
+        // манифесту от bin/board-sync.sh. Пути дедуплицируем.
+        const byId = new Map();
+        for (const card of cards) byId.set(card.id, card);
+        const external = [];
+        const seen = {};
+        const scanned = await listWorktreeCards(remote, sessionId, signal);
+        const listed = await readManifest(remote, sessionId, signal);
+        for (const path of scanned.concat(listed)) {
+          if (seen[path]) continue;
+          seen[path] = true;
+          external.push(path);
+        }
+        for (const path of external) {
+          let result;
+          try {
+            result = await remote.workspaceFiles.read(sessionId, path, { limit: MAX_LINES }, signal);
+          } catch (error) {
+            problems.push(path + ": " + describeError(error));
+            continue;
+          }
+          if (!result || result.ok !== true) {
+            // Исчезнувший worktree — обычная гонка с board-sync, молчим про него.
+            const code = result && result.error ? result.error.code : "";
+            if (code !== "workspace-file/not-found") {
+              problems.push(path + ": " + describeError(result ? result.error : null));
+            }
+            continue;
+          }
+          const card = parseCard(basenameOf(path), (result.value || {}).text);
+          card.source = "worktree";
+          card.path = path;
+          const existing = byId.get(card.id);
+          if (!existing || isNewer(card, existing)) byId.set(card.id, card);
+        }
+
+        const merged = Array.from(byId.values()).sort(compareCards);
+        return { ok: true, value: { cards: merged, problems, truncated: value.truncated === true } };
+      };
+    }
+
+    /** Фабрика бизнес-лица: превращает читатель в prop `loadBoard` тела слота. */
+    /**
+     * Namespace host-команды перемещения карточки: endpoint — `<namespace>/<method>`
+     * (см. `dsh-kanban/lib/card-actions.js`, задача #047).
+     */
+    const CARD_ACTIONS_NAMESPACE = "kanbanCardActions";
+
+    /**
+     * Какие карточки человек двигает руками: колонка → действие host-команды.
+     * Остальные колонки — только агенты по протоколу (`backlog ↔ todo`).
+     */
+    const CARD_ACTIONS = { backlog: "assign", todo: "unassign" };
+
+    /**
+     * Какие перетаскивания допустимы: исходный статус карточки → целевая колонка.
+     * Так же проверяет и хост (`bin/task-assign.sh`), здесь — чтобы подсветить
+     * дроп-зону и не гонять заведомо отказной запрос.
+     */
+    const CARD_DROPS = { backlog: "todo", todo: "backlog" };
+
+    /** Куда колонка принимает дроп: для подсветки цели и проверки в onDrop. */
+    function dropAccepts(columnId) {
+      return Object.keys(CARD_DROPS).some((from) => CARD_DROPS[from] === columnId);
+    }
+
+    /**
+     * Хост-команда перемещения карточки (канал #047): асайн из `backlog` и
+     * возврат из `todo`. Клиент только читает файлы (`workspaceFiles`
+     * read-only), поэтому решение принимает хост, а здесь — запрос и разбор ответа.
+     *
+     * Envelope RPC: `{ ok: true, value: { ok, status, owner?, message } }` или
+     * `{ ok: false, error: { code, message } }`. `value.ok === false` — отказ по
+     * делу («все заняты», «карточка уже в работе»), его текст показываем баннером.
+     *
+     * @param connection - клиентское соединение (`ctx.connection`).
+     * @returns `(sessionId, action, cardId, signal) => Promise<{ok,status,owner,message}>`.
+     */
+    function createCardMover(connection) {
+      return async function moveCard(sessionId, action, cardId, signal) {
+        if (!connection || !connection.rpc || typeof connection.rpc.call !== "function") {
+          // Канала нет вовсе (старый профиль / нет соединения) — это не отказ по
+          // делу: GUI должен сказать «канал недоступен», а не «не удалось».
+          return { ok: false, offline: true, message: "" };
+        }
+        let envelope;
+        try {
+          envelope = await connection.rpc.call(
+            "/api",
+            CARD_ACTIONS_NAMESPACE + "/" + action,
+            { args: { request: { sessionId, cardId } } },
+            signal
+          );
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+        if (!envelope || envelope.ok !== true) {
+          const failure = envelope && envelope.error ? describeError(envelope.error) : "";
+          return { ok: false, message: failure };
+        }
+        const value = envelope.value;
+        if (!value || typeof value !== "object") return { ok: false, message: "" };
+        return {
+          ok: value.ok === true,
+          status: String(value.status || ""),
+          owner: String(value.owner || ""),
+          message: String(value.message || "")
+        };
+      };
+    }
+
+    function boardFace(loadBoard, moveCard) {
+      return (sessionId) => ({
+        loadBoard: (signal) => loadBoard(sessionId, signal),
+        moveCard: (action, cardId, signal) => moveCard(sessionId, action, cardId, signal)
+      });
+    }
+
+    /** Идентификатор второй вкладки плагина: «Дочерние доски» (спека 004). */
+    const CHILDREN_ID = "dsh-kanban-children";
+    /** Дискриминатор типа второй вкладки. */
+    const CHILDREN_KIND = "kanban-children";
+    /** Namespace host-службы обзора: endpoint — `<namespace>/read`. */
+    const CHILDREN_NAMESPACE = "kanbanChildren";
+    /** Команда, которой родитель собирает манифест (подсказка в пустом состоянии). */
+    const CHILDREN_COMMAND = "bin/board-children.sh --root <дерево>";
+    /** Отступ уровня дерева в пикселях. */
+    const TREE_INDENT = 14;
+
+    /**
+     * Читатель обзора дочерних досок: host-служба `kanbanChildren` (#059).
+     *
+     * Клиент файловую систему детей не трогает (листинг вне workspace ему и не
+     * разрешён) — всё читает хост и отдаёт уже готовый снимок. Канал только
+     * читающий: аргумент один — `sessionId`.
+     */
+    function createChildrenReader(connection) {
+      return async function readChildren(sessionId, signal) {
+        if (!connection || !connection.rpc || typeof connection.rpc.call !== "function") {
+          return { ok: false, offline: true, error: "" };
+        }
+        let envelope;
+        try {
+          envelope = await connection.rpc.call(
+            "/api",
+            CHILDREN_NAMESPACE + "/read",
+            { args: { request: { sessionId } } },
+            signal
+          );
+        } catch (error) {
+          return { ok: false, error: describeError(error) };
+        }
+        if (!envelope || envelope.ok !== true) {
+          return { ok: false, error: envelope && envelope.error ? describeError(envelope.error) : "" };
+        }
+        const result = envelope.value;
+        if (!result || typeof result !== "object") return { ok: false, error: "" };
+        if (result.ok !== true) return { ok: false, error: String(result.message || "") };
+        const payload = result.value || {};
+        return {
+          ok: true,
+          value: {
+            boards: Array.isArray(payload.boards) ? payload.boards : [],
+            problems: Array.isArray(payload.problems) ? payload.problems : [],
+            manifest: String(payload.manifest || "")
+          }
+        };
+      };
+    }
+
+    /** Лицо вкладки: превращает читатель в prop `readChildren` тела слота. */
+    function childrenFace(readChildren) {
+      return (sessionId) => ({ readChildren: (signal) => readChildren(sessionId, signal) });
+    }
+
+    /** Инлайн-стили: тема не нужна, цвет наследуем у оболочки через currentColor. */
+    const HAIRLINE = "color-mix(in srgb, currentColor 12%, transparent)";
+    const styles = {
+      root: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, color: "inherit", fontSize: 12, lineHeight: 1.45 },
+      header: { display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid " + HAIRLINE, flex: "0 0 auto" },
+      headerTitle: { fontWeight: 600, fontSize: 12, letterSpacing: ".02em" },
+      headerMeta: { flex: 1, minWidth: 0, opacity: 0.6, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      refresh: { border: "1px solid " + HAIRLINE, background: "transparent", color: "inherit", borderRadius: 6, cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "3px 7px" },
+      banner: { margin: "6px 10px 0", padding: "5px 8px", borderRadius: 6, fontSize: 11, background: "color-mix(in srgb, #ef4444 14%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)" },
+      note: { margin: "6px 10px 0", padding: "5px 8px", borderRadius: 6, fontSize: 11, background: "color-mix(in srgb, #f59e0b 14%, transparent)", border: "1px solid color-mix(in srgb, #f59e0b 35%, transparent)" },
+      board: { display: "flex", gap: 8, padding: 8, flex: 1, minHeight: 0, alignItems: "flex-start", overflowX: "auto", overflowY: "hidden" },
+      /** Раскладка вкладки: доска слева, панель деталей справа. */
+      split: { display: "flex", flex: 1, minHeight: 0, gap: 8, alignItems: "stretch", overflow: "hidden" },
+      // Панель деталей: растягиваем по высоте доски (у доски alignItems: flex-start,
+      // иначе высота панели равна содержимому и прокрутка не включается) и пришпиливаем
+      // к правому краю, чтобы она не уезжала при горизонтальной прокрутке колонок.
+      details: { flex: "0 0 300px", alignSelf: "stretch", maxHeight: "100%", position: "sticky", right: 0, display: "flex", flexDirection: "column", gap: 6, padding: "8px 8px 8px 10px", borderLeft: "1px solid " + HAIRLINE, background: "canvas", overflowY: "auto" },
+      detailsHead: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 },
+      detailsTitle: { fontSize: 13, fontWeight: 600, wordBreak: "break-word" },
+      detailsRow: { display: "flex", gap: 6, fontSize: 11, alignItems: "baseline", flexWrap: "wrap" },
+      detailsLabel: { opacity: 0.6 },
+      detailsText: { fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word", opacity: 0.9 },
+      detailsSection: { fontSize: 11, fontWeight: 600, opacity: 0.75, marginTop: 2 },
+      comment: { borderLeft: "2px solid " + HAIRLINE, paddingLeft: 6, display: "flex", flexDirection: "column", gap: 2 },
+      commentHead: { display: "flex", gap: 6, fontSize: 10, opacity: 0.65, flexWrap: "wrap" },
+      column: { flex: "0 0 auto", width: 232, maxHeight: "100%", display: "flex", flexDirection: "column", border: "1px solid " + HAIRLINE, borderRadius: 10, background: "color-mix(in srgb, currentColor 4%, transparent)", overflow: "hidden" },
+      columnHeader: { display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: "1px solid " + HAIRLINE, fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", opacity: 0.85, flex: "0 0 auto" },
+      dot: { width: 8, height: 8, borderRadius: "50%", flex: "0 0 auto" },
+      count: { marginLeft: "auto", opacity: 0.6, fontVariantNumeric: "tabular-nums" },
+      columnBody: { display: "flex", flexDirection: "column", gap: 6, padding: 6, overflowY: "auto", minHeight: 40 },
+      card: { display: "flex", flexDirection: "column", gap: 3, padding: "6px 8px", border: "1px solid " + HAIRLINE, borderLeftWidth: 3, borderLeftStyle: "solid", borderRadius: 8, background: "color-mix(in srgb, currentColor 5%, transparent)" },
+      cardTop: { display: "flex", alignItems: "center", gap: 6 },
+      cardId: { opacity: 0.6, fontSize: 11, fontVariantNumeric: "tabular-nums" },
+      owner: { marginLeft: "auto", fontSize: 10, padding: "1px 5px", borderRadius: 999, border: "1px solid " + HAIRLINE, opacity: 0.9, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      branchBadge: { fontSize: 10, padding: "1px 5px", borderRadius: 999, background: "color-mix(in srgb, currentColor 14%, transparent)", opacity: 0.85, whiteSpace: "nowrap" },
+      roleBadge: { fontSize: 10, padding: "1px 5px", borderRadius: 999, border: "1px solid " + HAIRLINE, opacity: 0.9, whiteSpace: "nowrap" },
+      ownerEmpty: { marginLeft: "auto", fontSize: 10, opacity: 0.45 },
+      cardTitle: { fontSize: 12, fontWeight: 500, wordBreak: "break-word" },
+      /** Название закрытой задачи: зачёркнуто, чтобы колонка merged читалась сразу. */
+      cardTitleMerged: { textDecoration: "line-through", opacity: 0.7 },
+      /** Выбранная карточка: панель деталей справа показывает именно её. */
+      cardSelected: { outline: "1px solid currentColor", outlineOffset: 1, background: "color-mix(in srgb, currentColor 10%, transparent)" },
+      /** Кнопка-дубль перетаскивания: доступность и запасной путь, если DnD не сработал. */
+      cardActions: { display: "flex", gap: 6, marginTop: 2 },
+      cardAction: { border: "1px solid " + HAIRLINE, background: "transparent", color: "inherit", borderRadius: 6, cursor: "pointer", fontSize: 10, lineHeight: 1, padding: "3px 6px", opacity: 0.85 },
+      cardActionBusy: { border: "1px solid " + HAIRLINE, background: "transparent", color: "inherit", borderRadius: 6, cursor: "progress", fontSize: 10, lineHeight: 1, padding: "3px 6px", opacity: 0.5 },
+      /** Колонка-цель под курсором: видно, куда уедет карточка. */
+      columnOver: { outline: "1px dashed currentColor", outlineOffset: -2, background: "color-mix(in srgb, currentColor 10%, transparent)" },
+      /** Успешный перенос: зелёный баннер, чтобы не путать с ошибкой. */
+      noticeOk: { margin: "6px 10px 0", padding: "5px 8px", borderRadius: 6, fontSize: 11, background: "color-mix(in srgb, #22c55e 14%, transparent)", border: "1px solid color-mix(in srgb, #22c55e 35%, transparent)" },
+      meta: { fontSize: 10, opacity: 0.6, wordBreak: "break-all" },
+      note: { fontSize: 10, color: "#f97316", wordBreak: "break-word" },
+      empty: { padding: "14px 12px", opacity: 0.7, fontSize: 11, maxWidth: 420 },
+      // Вкладка «Дочерние доски»: дерево досок read-only.
+      tree: { display: "flex", flexDirection: "column", gap: 6, padding: 8, overflowY: "auto", flex: 1, minHeight: 0 },
+      boardRow: { display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px", border: "1px solid " + HAIRLINE, borderRadius: 8, background: "color-mix(in srgb, currentColor 4%, transparent)", cursor: "pointer" },
+      boardRowTop: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" },
+      boardTitle: { fontSize: 12, fontWeight: 600 },
+      boardCounters: { display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" },
+      counter: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, opacity: 0.8, whiteSpace: "nowrap" },
+      missingBadge: { fontSize: 10, padding: "1px 5px", borderRadius: 999, background: "color-mix(in srgb, #ef4444 16%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)" },
+      boardCards: { display: "flex", flexDirection: "column", gap: 2, paddingTop: 2 },
+      boardCardLine: { display: "flex", alignItems: "baseline", gap: 6, fontSize: 11, flexWrap: "wrap" },
+      boardCardTitle: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      drill: { display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, gap: 6 },
+      drillHead: { display: "flex", alignItems: "baseline", gap: 8, padding: "0 10px", flexWrap: "wrap" },
+      mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 11 }
+    };
+
+    /** Есть ли расход: ноль и пустое значение — это отсутствие данных. */
+    function hasTokens(card) {
+      return Number(String(card.tokens || "").replace(/\s+/g, "")) > 0;
+    }
+
+    /** Подпись роли: известные роли берём из словаря, незнакомую показываем как записана. */
+    function roleLabel(role, t) {
+      const value = String(role || "").trim().toLowerCase();
+      if (value === "") return "";
+      const key = "role." + value;
+      const label = t(key);
+      return typeof label === "string" && label !== "" && label !== key ? label : value;
+    }
+
+    /** Короткая подпись владельца: id сессии длинный, в карточке хватит начала. */
+    function shortOwner(owner) {
+      const value = String(owner || "");
+      return value.length > 14 ? value.slice(0, 12) + "…" : value;
+    }
+
+    /** Одна карточка задачи. */
+    /**
+     * Панель деталей задачи: открывается кликом по карточке. Показывает название,
+     * расход токенов с разбивкой по ролям, роль и владельца-сессию, описание задачи
+     * и все комментарии ролей за время решения.
+     */
+    function CardDetails({ card, t, onClose }) {
+      const rows = [];
+      if (hasTokens(card)) {
+        const breakdown = Object.entries(card.usage || {})
+          .map(([role, value]) => role + ": " + formatTokens(value))
+          .join("; ");
+        rows.push(
+          h(
+            "div",
+            { key: "tokens", style: styles.detailsRow },
+            h("span", { style: styles.detailsLabel }, t("tokens") + ":"),
+            h("span", null, formatTokens(card.tokens) + (breakdown ? " (" + breakdown + ")" : ""))
+          )
+        );
+      }
+      const who = [card.role ? roleLabel(card.role, t) : "", card.owner || t("noOwner")]
+        .filter(Boolean)
+        .join(" · ");
+      rows.push(
+        h(
+          "div",
+          { key: "who", style: styles.detailsRow },
+          h("span", { style: styles.detailsLabel }, t("session") + ":"),
+          h("span", { title: card.owner || "" }, who)
+        )
+      );
+      if (card.since) {
+        rows.push(
+          h(
+            "div",
+            { key: "since", style: styles.detailsRow },
+            h("span", { style: styles.detailsLabel }, t("since") + ":"),
+            h("span", null, card.since)
+          )
+        );
+      }
+      if (card.spec) {
+        rows.push(
+          h(
+            "div",
+            { key: "spec", style: styles.detailsRow, "data-kanban-spec": card.spec },
+            h("span", { style: styles.detailsLabel }, t("spec") + ":"),
+            h(
+              "span",
+              { title: ".kanban/specs/" + card.spec + ".md" },
+              ".kanban/specs/" + card.spec + ".md"
+            )
+          )
+        );
+      }
+
+      const comments = Array.isArray(card.comments) ? card.comments : [];
+      const commentNodes = comments.length
+        ? comments.map((comment, index) =>
+            h(
+              "div",
+              { key: "c" + index, style: styles.comment, "data-kanban-comment": String(index) },
+              h(
+                "div",
+                { style: styles.commentHead },
+                h("span", null, comment.at),
+                h("span", null, comment.status)
+              ),
+              h("div", { style: styles.detailsText }, comment.text)
+            )
+          )
+        : [h("div", { key: "none", style: styles.detailsText }, t("noComments"))];
+
+      return h(
+        "aside",
+        { style: styles.details, "data-kanban-details": String(card.id) },
+        h(
+          "div",
+          { style: styles.detailsHead },
+          h("div", { style: styles.detailsTitle }, card.title),
+          h(
+            "button",
+            { type: "button", style: styles.refresh, title: t("close"), onClick: () => onClose && onClose() },
+            "✕"
+          )
+        ),
+        h("div", { style: styles.detailsRow }, h("span", { style: styles.detailsLabel }, "#" + card.id)),
+        rows,
+        h("div", { style: styles.detailsSection }, t("description")),
+        h("div", { style: styles.detailsText }, card.description || "—"),
+        h("div", { style: styles.detailsSection }, t("comments") + " (" + comments.length + ")"),
+        commentNodes
+      );
+    }
+
+    function Card({ card, t, onSelect, selected, onMove, onDragStart, onDragEnd, busy }) {
+      const column = COLUMN_BY_ID[card.status] || COLUMN_BY_ID.todo;
+      const children = [
+        h(
+          "div",
+          { key: "top", style: styles.cardTop },
+          h("span", { style: styles.cardId }, "#" + card.id),
+          card.source === "worktree"
+            ? h("span", { key: "branch", style: styles.branchBadge, title: card.path || "" }, t("inBranch"))
+            : null,
+          card.role
+            ? h(
+                "span",
+                {
+                  key: "role",
+                  style: styles.roleBadge,
+                  title: card.since ? card.role + " · " + t("since") + " " + card.since : card.role
+                },
+                roleLabel(card.role, t)
+              )
+            : null,
+          card.owner
+            ? h("span", { style: styles.owner, title: card.owner }, shortOwner(card.owner))
+            : h("span", { style: styles.ownerEmpty }, t("noOwner"))
+        ),
+        h(
+          "div",
+          {
+            key: "title",
+            style:
+              card.status === "merged"
+                ? Object.assign({}, styles.cardTitle, styles.cardTitleMerged)
+                : styles.cardTitle
+          },
+          card.title
+        )
+      ];
+      if (card.branch) children.push(h("div", { key: "branch", style: styles.meta }, card.branch));
+      if (hasTokens(card)) {
+        const breakdown = Object.entries(card.usage || {})
+          .map(([role, value]) => role + ": " + formatTokens(value))
+          .join("; ");
+        children.push(
+          h(
+            "div",
+            { key: "tokens", style: styles.meta, title: breakdown || card.tokens },
+            t("tokens") + ": " + formatTokens(card.tokens)
+          )
+        );
+      }
+      if (card.note) children.push(h("div", { key: "note", style: styles.note, title: card.note }, clampText(card.note, 140)));
+      if (card.updated) children.push(h("div", { key: "updated", style: styles.meta }, card.updated));
+      // Кнопка-дубль: в бэклоге «→ В работу», в очереди «← В backlog». Она нужна
+      // всегда — и для доступности с клавиатуры, и как запасной путь, если
+      // перетаскивание в рендерере не сработает.
+      const action = CARD_ACTIONS[card.status] || "";
+      if (action && typeof onMove === "function") {
+        children.push(
+          h(
+            "div",
+            { key: "actions", style: styles.cardActions },
+            h(
+              "button",
+              {
+                type: "button",
+                "data-kanban-action": action,
+                "data-kanban-action-card": card.id,
+                style: busy ? styles.cardActionBusy : styles.cardAction,
+                disabled: busy === true,
+                title: action === "assign" ? t("move.assignTitle") : t("move.unassignTitle"),
+                onClick: (event) => {
+                  // Кнопка не должна открывать панель деталей.
+                  if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+                  if (!busy) onMove(action);
+                }
+              },
+              busy ? t("move.busy") : action === "assign" ? t("move.assign") : t("move.unassign")
+            )
+          )
+        );
+      }
+      const style = Object.assign(
+        {},
+        styles.card,
+        { borderLeftColor: column.color },
+        selected ? styles.cardSelected : null,
+        onSelect ? { cursor: "pointer" } : null
+      );
+      const draggable = Boolean(action) && typeof onDragStart === "function" && !busy;
+      return h(
+        "article",
+        {
+          style,
+          title: card.file,
+          "data-kanban-card": card.id,
+          "data-kanban-status": card.status,
+          "data-kanban-draggable": draggable ? "1" : undefined,
+          draggable: draggable ? "true" : undefined,
+          onDragStart: draggable ? (event) => onDragStart(event, card, action) : undefined,
+          onDragEnd: draggable && typeof onDragEnd === "function" ? () => onDragEnd(card) : undefined,
+          onClick: onSelect ? () => onSelect(card.key) : undefined
+        },
+        children
+      );
+    }
+
+    /** Тело таба: шапка, предупреждения и колонки. */
+    function KanbanBody(props) {
+      const sessionId = props.sessionId;
+      const t = props.t;
+      const useSessions = props.useSessions;
+      const loadBoard = props.loadBoard;
+
+      const cwd =
+        typeof useSessions === "function"
+          ? useSessions((sessions) => {
+              const row = sessions && sessions.byId ? sessions.byId[sessionId] : undefined;
+              return row ? row.cwd : undefined;
+            })
+          : undefined;
+
+      const [state, setState] = React.useState({ phase: "loading", cards: [], problems: [], truncated: false, error: "" });
+      // Какая карточка открыта в панели деталей (ключ — имя файла).
+      const [selectedKey, setSelectedKey] = React.useState(null);
+      // Перенос карточки: что показываем баннером, какая карточка в полёте и
+      // какая сейчас тащится. Данные перетаскивания держим в ref: обработчики
+      // drop/dragover приходят из разных рендеров, состояние в них устаревает.
+      const [notice, setNotice] = React.useState(null);
+      const [busyKey, setBusyKey] = React.useState(null);
+      const [dropTarget, setDropTarget] = React.useState("");
+      const dragRef = React.useRef(null);
+      const moveRef = React.useRef(props.moveCard);
+      // Контроллер текущего запроса: при уходе с доски отменяем перенос.
+      const moveAbortRef = React.useRef(null);
+      React.useEffect(() => {
+        moveRef.current = props.moveCard;
+      }, [props.moveCard]);
+      const signature = React.useRef("");
+      const tickRef = React.useRef(null);
+      const loadRef = React.useRef(loadBoard);
+      React.useEffect(() => {
+        loadRef.current = loadBoard;
+      }, [loadBoard]);
+
+      React.useEffect(() => {
+        let stopped = false;
+        let timer = 0;
+        const controller = new AbortController();
+        const tick = async () => {
+          let result;
+          if (typeof loadRef.current !== "function") return;
+          try {
+            result = await loadRef.current(controller.signal);
+          } catch (error) {
+            result = { ok: false, error: describeError(error) };
+          }
+          if (stopped) return;
+          const ok = Boolean(result && result.ok);
+          const value = (ok && result.value) || { cards: [], problems: [] };
+          const next = {
+            phase: ok ? "ready" : "error",
+            cards: value.cards || [],
+            problems: value.problems || [],
+            truncated: value.truncated === true,
+            error: ok ? "" : describeError(result ? result.error : null)
+          };
+          const fingerprint = JSON.stringify([next.error, next.problems, next.truncated, next.cards.map((card) => [card.id, card.status, card.owner, card.updated, card.title])]);
+          if (fingerprint === signature.current) return;
+          signature.current = fingerprint;
+          setState((previous) => (ok ? next : Object.assign({}, previous, { phase: previous.cards.length ? "ready" : "error", error: next.error })));
+        };
+        tickRef.current = tick;
+        tick();
+        timer = setInterval(tick, POLL_MS);
+        return () => {
+          stopped = true;
+          if (timer) clearInterval(timer);
+          controller.abort();
+          if (moveAbortRef.current) moveAbortRef.current.abort();
+        };
+      }, [sessionId]);
+
+      /** Перенос карточки: асайн или возврат через host-команду канала #047. */
+      const runMove = async (card, action) => {
+        if (!card || busyKey) return;
+        const move = moveRef.current;
+        if (typeof move !== "function") {
+          setNotice({ kind: "error", text: t("move.unavailable") });
+          return;
+        }
+        setBusyKey(card.key);
+        setNotice(null);
+        const controller = new AbortController();
+        moveAbortRef.current = controller;
+        let result;
+        try {
+          result = await move(action, card.id, controller.signal);
+        } catch (error) {
+          result = { ok: false, message: describeError(error) };
+        }
+        if (moveAbortRef.current === controller) moveAbortRef.current = null;
+        setBusyKey(null);
+        if (result && result.ok) {
+          // Доска перечитывается сама: новый статус и владелец должны появиться
+          // без ожидания опроса.
+          setNotice({ kind: "ok", text: t("move.done") + (result.owner ? ": " + result.owner : "") });
+          if (typeof tickRef.current === "function") void tickRef.current();
+        } else {
+          const failure = result && result.message;
+          setNotice({ kind: "error", text: failure || (result && result.offline ? t("move.unavailable") : t("move.failed")) });
+        }
+      };
+
+      /** Можно ли бросить карточку в эту колонку. */
+      const canDrop = (drag, columnId) => Boolean(drag) && CARD_DROPS[drag.card.status] === columnId;
+
+      const startDrag = (event, card, action) => {
+        dragRef.current = { card, action };
+        setDropTarget("");
+        // dataTransfer нужен браузеру для старта перетаскивания; недоступен —
+        // не беда, у нас есть кнопка-дубль.
+        if (event && event.dataTransfer) {
+          try {
+            event.dataTransfer.setData("text/plain", card.id);
+            event.dataTransfer.effectAllowed = "move";
+          } catch (error) {
+            /* браузер вправе запретить dataTransfer — перетаскивание всё равно начнётся */
+          }
+        }
+      };
+
+      const endDrag = () => {
+        dragRef.current = null;
+        setDropTarget("");
+      };
+
+      const dragOverColumn = (column, event) => {
+        // preventDefault разрешает drop; без него браузер отменит перенос.
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        const drag = dragRef.current;
+        if (!drag) return;
+        if (event && event.dataTransfer) {
+          event.dataTransfer.dropEffect = canDrop(drag, column.id) ? "move" : "none";
+        }
+        const next = canDrop(drag, column.id) ? column.id : "";
+        setDropTarget((previous) => (previous === next ? previous : next));
+      };
+
+      const dropOnColumn = (column, event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        const drag = dragRef.current;
+        dragRef.current = null;
+        setDropTarget("");
+        if (!drag) return;
+        if (canDrop(drag, column.id)) {
+          void runMove(drag.card, CARD_ACTIONS[drag.card.status]);
+          return;
+        }
+        // На свою колонку бросили — это не перенос, подсказка не нужна.
+        if (drag.card.status === column.id) return;
+        setNotice({ kind: "error", text: t("move.onlyAgents") });
+      };
+
+      const columns = COLUMNS.map((column) => ({
+        column,
+        items: state.cards.filter((card) => card.status === column.id)
+      }));
+      const selectedCard = state.cards.find((card) => card.key === selectedKey) || null;
+      const workspaceLabel = cwd ? cwd.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || cwd : t("noWorkspace");
+
+      const body = [];
+      body.push(
+        h(
+          "div",
+          { key: "header", style: styles.header },
+          h("span", { style: styles.headerTitle }, t("title")),
+          h("span", { style: styles.headerMeta, title: cwd || "" }, workspaceLabel + " · " + state.cards.length + " " + t("cards")),
+          h(
+            "button",
+            {
+              type: "button",
+              style: styles.refresh,
+              title: t("refresh"),
+              onClick: () => {
+                if (typeof tickRef.current === "function") tickRef.current();
+              }
+            },
+            "⟳"
+          )
+        )
+      );
+      if (state.error) body.push(h("div", { key: "error", style: styles.banner }, t("error") + ": " + state.error));
+      if (state.problems.length) body.push(h("div", { key: "problems", style: styles.note }, t("problems") + ": " + state.problems.join("; ")));
+      if (state.truncated) body.push(h("div", { key: "truncated", style: styles.note }, t("truncated")));
+      // Баннер переноса: отказ хоста («все заняты», «карточка уже в работе»),
+      // недоступный канал или подтверждение асайна.
+      if (notice) {
+        body.push(
+          h(
+            "div",
+            {
+              key: "move-notice",
+              style: notice.kind === "error" ? styles.banner : styles.noticeOk,
+              "data-kanban-move-notice": notice.kind,
+              role: "status"
+            },
+            notice.text
+          )
+        );
+      }
+
+      if (state.cards.length === 0 && !state.error) {
+        body.push(h("div", { key: "empty", style: styles.empty }, h("div", null, t("missing")), h("div", { style: styles.mono }, 'bash bin/task-new.sh "название задачи"')));
+      } else {
+        body.push(
+          h(
+            "div",
+            { key: "board", style: styles.board },
+            columns.map(({ column, items }) =>
+              h(
+                "section",
+                {
+                  key: column.id,
+                  style:
+                    dropTarget === column.id
+                      ? Object.assign({}, styles.column, styles.columnOver)
+                      : styles.column,
+                  "data-kanban-column": column.id,
+                  "data-kanban-drop": dropAccepts(column.id) ? "1" : undefined,
+                  onDragOver: (event) => dragOverColumn(column, event),
+                  onDragLeave: () => setDropTarget((previous) => (previous === column.id ? "" : previous)),
+                  onDrop: (event) => dropOnColumn(column, event)
+                },
+                h(
+                  "header",
+                  { style: styles.columnHeader },
+                  h("span", { style: Object.assign({}, styles.dot, { background: column.color }) }),
+                  h("span", null, t("column." + column.id)),
+                  h("span", { style: styles.count }, String(items.length))
+                ),
+                h(
+                  "div",
+                  { style: styles.columnBody },
+                  items.length === 0
+                    ? h("div", { style: { opacity: 0.35, fontSize: 11 } }, "—")
+                    : items.map((card) =>
+                        h(Card, {
+                          key: card.key,
+                          card,
+                          t,
+                          onSelect: setSelectedKey,
+                          selected: card.key === selectedKey,
+                          onMove: (action) => {
+                            void runMove(card, action);
+                          },
+                          onDragStart: startDrag,
+                          onDragEnd: endDrag,
+                          busy: busyKey === card.key
+                        })
+                      )
+                )
+              )
+            ),
+            selectedCard
+              ? h(CardDetails, { key: "details", card: selectedCard, t, onClose: () => setSelectedKey(null) })
+              : null
+          )
+        );
+      }
+      return h("div", { style: styles.root, "data-kanban-phase": state.phase }, body);
+    }
+
+    /** Заголовок таба. */
+    function KanbanTitle(props) {
+      return h("span", null, props.t ? props.t("title") : "Kanban");
+    }
+
+    // ── вкладка «Дочерние доски» (спека 004, задача #059) ─────────────────────
+    //
+    // Только чтение: родитель смотрит, как идут задачи у детей, но не управляет
+    // ими. Поэтому здесь нет ни перетаскивания, ни кнопок перевода, ни тоста
+    // «переношу…» — асайн и переходы остаются у ролей дочерней доски.
+
+    /** Сегменты пути доски: по ним считается уровень в дереве. */
+    function boardSegments(value) {
+      return String(value == null ? "" : value)
+        .replace(/[/\\]+$/, "")
+        .split(/[/\\]/)
+        .filter(Boolean);
+    }
+
+    /** Отступ доски в дереве: уровень относительно самой верхней доски списка. */
+    function boardDepth(boards, value) {
+      const lengths = (boards || []).map((board) => boardSegments(board.path).length);
+      const base = lengths.length > 0 ? Math.min.apply(null, lengths) : 0;
+      return Math.max(0, boardSegments(value).length - base);
+    }
+
+    /** Счётчики доски: `counts` от хоста, а если его нет — считаем по карточкам. */
+    function childrenCounts(board) {
+      if (board && board.counts && typeof board.counts === "object") return board.counts;
+      const counts = {};
+      for (const column of COLUMNS) counts[column.id] = 0;
+      for (const card of (board && board.cards) || []) {
+        if (Object.prototype.hasOwnProperty.call(counts, card.status)) counts[card.status] += 1;
+      }
+      return counts;
+    }
+
+    /** Карточки «в работе»: из ответа хоста либо из карточек доски. */
+    function childrenInProgress(board) {
+      if (Array.isArray(board && board.inProgress)) return board.inProgress;
+      return ((board && board.cards) || []).filter((card) => card.status === "in-progress");
+    }
+
+    /** Строка счётчиков доски: по значку на непустой статус. */
+    function childrenCounters(board, t) {
+      const counts = childrenCounts(board);
+      const nodes = [];
+      for (const column of COLUMNS) {
+        if (column.id === "merged") continue;
+        const value = counts[column.id] || 0;
+        if (value === 0) continue;
+        nodes.push(
+          h(
+            "span",
+            { key: column.id, style: styles.counter, title: t("column." + column.id), "data-kanban-children-count": column.id },
+            h("span", { style: Object.assign({}, styles.dot, { background: column.color }) }),
+            t("column." + column.id) + " " + value
+          )
+        );
+      }
+      return nodes;
+    }
+
+    /** Read-only карточка доски ребёнка: ни перетаскивания, ни кнопок перевода. */
+    function ChildrenCard({ card, t, onSelect, selected }) {
+      const column = COLUMN_BY_ID[card.status] || COLUMN_BY_ID.todo;
+      return h(
+        "div",
+        {
+          style: selected ? Object.assign({}, styles.card, styles.cardSelected) : Object.assign({}, styles.card, { borderLeftColor: column.color }),
+          "data-kanban-children-card-id": String(card.id),
+          onClick: () => onSelect && onSelect(card),
+          role: "button",
+          tabIndex: 0
+        },
+        h(
+          "div",
+          { style: styles.cardTop },
+          h("span", { style: styles.cardId }, "#" + card.id),
+          card.source === "worktree"
+            ? h("span", { key: "branch", style: styles.branchBadge, title: card.worktree || "" }, t("inBranch"))
+            : null,
+          card.owner
+            ? h("span", { style: styles.owner, title: card.owner }, shortOwner(card.owner))
+            : h("span", { style: styles.ownerEmpty }, t("noOwner"))
+        ),
+        h("div", { style: styles.cardTitle }, card.title),
+        card.updated ? h("div", { style: styles.meta }, card.updated) : null
+      );
+    }
+
+    /** Панель деталей карточки ребёнка: описание, расход, роль, spec — без действий. */
+    function ChildrenCardDetails({ card, t, onClose }) {
+      const rows = [];
+      if (hasTokens(card)) {
+        const breakdown = Object.entries(card.usage || {})
+          .map(([role, value]) => role + ": " + formatTokens(value))
+          .join("; ");
+        rows.push(
+          h(
+            "div",
+            { key: "tokens", style: styles.detailsRow },
+            h("span", { style: styles.detailsLabel }, t("tokens") + ":"),
+            h("span", null, formatTokens(card.tokens) + (breakdown ? " (" + breakdown + ")" : ""))
+          )
+        );
+      }
+      const who = [card.role ? roleLabel(card.role, t) : "", card.owner || t("noOwner")].filter(Boolean).join(" · ");
+      rows.push(
+        h(
+          "div",
+          { key: "who", style: styles.detailsRow },
+          h("span", { style: styles.detailsLabel }, t("session") + ":"),
+          h("span", { title: card.owner || "" }, who)
+        )
+      );
+      if (card.updated) {
+        rows.push(
+          h(
+            "div",
+            { key: "updated", style: styles.detailsRow },
+            h("span", { style: styles.detailsLabel }, t("children.updated") + ":"),
+            h("span", null, card.updated)
+          )
+        );
+      }
+      if (card.spec) {
+        rows.push(
+          h(
+            "div",
+            { key: "spec", style: styles.detailsRow, "data-kanban-spec": card.spec },
+            h("span", { style: styles.detailsLabel }, t("spec") + ":"),
+            h("span", { title: ".kanban/specs/" + card.spec + ".md" }, ".kanban/specs/" + card.spec + ".md")
+          )
+        );
+      }
+      return h(
+        "aside",
+        { style: styles.details, "data-kanban-children-details": String(card.id) },
+        h(
+          "div",
+          { style: styles.detailsHead },
+          h("div", { style: styles.detailsTitle }, card.title),
+          h(
+            "button",
+            { type: "button", style: styles.refresh, title: t("close"), onClick: () => onClose && onClose() },
+            "✕"
+          )
+        ),
+        h("div", { style: styles.detailsRow }, h("span", { style: styles.detailsLabel }, "#" + card.id)),
+        rows,
+        h("div", { style: styles.detailsSection }, t("description")),
+        h("div", { style: styles.detailsText }, card.description || "—")
+      );
+    }
+
+    /** Тело вкладки «Дочерние доски»: сводка по дереву и read-only drill-down. */
+    function ChildrenBody(props) {
+      const t = props.t;
+      const sessionId = props.sessionId;
+      const readRef = React.useRef(props.readChildren);
+      const [state, setState] = React.useState({
+        phase: "loading",
+        boards: [],
+        problems: [],
+        manifest: "",
+        error: "",
+        offline: false
+      });
+      // Открытая доска (drill-down) и выбранная карточка (панель деталей).
+      const [openPath, setOpenPath] = React.useState(null);
+      const [cardKey, setCardKey] = React.useState(null);
+      const signature = React.useRef("");
+      const tickRef = React.useRef(null);
+
+      React.useEffect(() => {
+        readRef.current = props.readChildren;
+      }, [props.readChildren]);
+
+      React.useEffect(() => {
+        let stopped = false;
+        let timer = 0;
+        const controller = new AbortController();
+        const tick = async (force) => {
+          if (typeof readRef.current !== "function") return;
+          let result;
+          try {
+            result = await readRef.current(controller.signal);
+          } catch (error) {
+            result = { ok: false, error: describeError(error) };
+          }
+          if (stopped) return;
+          const ok = Boolean(result && result.ok);
+          const value = (ok && result.value) || { boards: [], problems: [], manifest: "" };
+          const next = {
+            phase: ok ? "ready" : "error",
+            boards: value.boards || [],
+            problems: value.problems || [],
+            manifest: String(value.manifest || ""),
+            error: ok ? "" : describeError(result ? result.error : null),
+            offline: Boolean(result && result.offline)
+          };
+          // Подпись — то, что вкладка рисует: название/наличие доски, её счётчики,
+          // карточки «в работе» (сводка) и полные карточки (drill-down и панель
+          // деталей). Прежняя подпись считала только число карточек в работе,
+          // поэтому смена владельца, названия или updated не доходила до экрана.
+          const fingerprint = JSON.stringify([
+            next.error,
+            next.manifest,
+            next.problems,
+            next.boards.map((board) => [
+              board.path,
+              board.title,
+              board.missing,
+              board.problems,
+              childrenCounts(board),
+              childrenInProgress(board),
+              board.cards || []
+            ])
+          ]);
+          // force — кнопка ⟳: оператор просит перерисовать даже при той же подписи.
+          if (!force && fingerprint === signature.current) return;
+          signature.current = fingerprint;
+          setState((previous) =>
+            ok
+              ? next
+              : Object.assign({}, previous, {
+                  phase: previous.boards.length ? "ready" : "error",
+                  error: next.error,
+                  offline: next.offline
+                })
+          );
+        };
+        tickRef.current = tick;
+        tick();
+        timer = setInterval(tick, POLL_MS);
+        return () => {
+          stopped = true;
+          if (timer) clearInterval(timer);
+          controller.abort();
+        };
+      }, [sessionId]);
+
+      const body = [];
+      body.push(
+        h(
+          "div",
+          { key: "header", style: styles.header },
+          h("span", { style: styles.headerTitle }, t("children.title")),
+          h(
+            "span",
+            { style: styles.headerMeta },
+            state.phase === "ready"
+              ? state.boards.length + " " + t("children.boards")
+              : t("children.loading")
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              style: styles.refresh,
+              title: t("refresh"),
+              "data-kanban-children-refresh": "1",
+              onClick: () => {
+                // ⟳ — обновить сейчас: forced-тик не глохнет на совпавшей подписи.
+                if (typeof tickRef.current === "function") tickRef.current(true);
+              }
+            },
+            "⟳"
+          )
+        )
+      );
+
+      if (state.error) {
+        body.push(
+          h(
+            "div",
+            { key: "error", style: styles.banner, "data-kanban-children-error": "1" },
+            (state.offline ? t("children.unavailable") : t("children.error")) + (state.error ? ": " + state.error : "")
+          )
+        );
+      }
+      for (const [index, problem] of state.problems.entries()) {
+        body.push(h("div", { key: "problem-" + index, style: styles.note }, problem));
+      }
+
+      // Пустые состояния: нет манифеста (подсказка с командой) и манифест без досок.
+      if (state.phase === "ready" && state.boards.length === 0) {
+        if (state.manifest === "missing") {
+          body.push(
+            h(
+              "div",
+              { key: "no-manifest", style: styles.empty, "data-kanban-children-empty": "manifest" },
+              h("div", null, t("children.noManifest")),
+              h("div", { style: styles.mono }, CHILDREN_COMMAND)
+            )
+          );
+        } else if (state.manifest === "broken") {
+          body.push(h("div", { key: "broken", style: styles.empty, "data-kanban-children-empty": "broken" }, t("children.broken")));
+        } else {
+          body.push(h("div", { key: "no-boards", style: styles.empty, "data-kanban-children-empty": "boards" }, t("children.empty")));
+        }
+      }
+
+      const openBoard = state.boards.find((board) => board.path === openPath) || null;
+      const selectedCard =
+        (openBoard && (openBoard.cards || []).find((card) => openBoard.path + "/" + card.id === cardKey)) || null;
+
+      if (openBoard) {
+        // Drill-down: колонки доски ребёнка только для чтения.
+        const columns = COLUMNS.map((column) => ({
+          column,
+          items: (openBoard.cards || []).filter((card) => card.status === column.id)
+        }));
+        const drill = [];
+        drill.push(
+          h(
+            "div",
+            { key: "drill-head", style: styles.drillHead },
+            h(
+              "button",
+              {
+                type: "button",
+                style: styles.cardAction,
+                "data-kanban-children-back": "1",
+                onClick: () => {
+                  setOpenPath(null);
+                  setCardKey(null);
+                }
+              },
+              "← " + t("children.back")
+            ),
+            h("span", { style: styles.detailsTitle }, openBoard.title),
+            h("span", { style: styles.meta, title: openBoard.absPath || "" }, openBoard.path),
+            h("span", { style: styles.headerMeta })
+          )
+        );
+        for (const [index, problem] of (openBoard.problems || []).entries()) {
+          drill.push(h("div", { key: "drill-problem-" + index, style: styles.note }, problem));
+        }
+        drill.push(
+          h(
+            "div",
+            { key: "columns", style: styles.board },
+            columns.map((entry) =>
+              h(
+                "div",
+                { key: entry.column.id, style: styles.column, "data-kanban-children-column": entry.column.id },
+                h(
+                  "div",
+                  { style: styles.columnHeader },
+                  h("span", { style: Object.assign({}, styles.dot, { background: entry.column.color }) }),
+                  h("span", null, t("column." + entry.column.id)),
+                  h("span", { style: styles.count }, String(entry.items.length))
+                ),
+                h(
+                  "div",
+                  { style: styles.columnBody },
+                  entry.items.length === 0
+                    ? h("div", { style: styles.empty }, t("children.columnEmpty"))
+                    : entry.items.map((card) =>
+                        h(ChildrenCard, {
+                          key: card.id,
+                          card,
+                          t,
+                          selected: cardKey === openBoard.path + "/" + card.id,
+                          onSelect: (picked) => setCardKey(openBoard.path + "/" + picked.id)
+                        })
+                      )
+                )
+              )
+            )
+          )
+        );
+        body.push(
+          h(
+            "div",
+            { key: "split", style: styles.split, "data-kanban-children-open": openBoard.path },
+            h("div", { key: "drill", style: styles.drill }, drill),
+            selectedCard ? h(ChildrenCardDetails, { key: "details", card: selectedCard, t, onClose: () => setCardKey(null) }) : null
+          )
+        );
+      } else if (state.phase === "ready" && state.boards.length > 0) {
+        // Сводка: дерево досок с отступом по уровням пути.
+        const rows = [];
+        for (const board of state.boards) {
+          const depth = boardDepth(state.boards, board.path);
+          const inProgress = childrenInProgress(board);
+          rows.push(
+            h(
+              "div",
+              {
+                key: "board-" + board.path,
+                style: Object.assign({}, styles.boardRow, { paddingLeft: 10 + depth * TREE_INDENT }),
+                "data-kanban-children-board": board.path,
+                "data-kanban-children-depth": String(depth),
+                role: "button",
+                tabIndex: 0,
+                onClick: () => setOpenPath(board.path)
+              },
+              h(
+                "div",
+                { style: styles.boardRowTop },
+                h("span", { style: styles.boardTitle }, board.title),
+                h("span", { style: styles.meta, title: board.absPath || "" }, board.path),
+                h("span", { style: styles.boardCounters }, childrenCounters(board, t)),
+                board.missing ? h("span", { style: styles.missingBadge }, t("children.missing")) : null
+              ),
+              inProgress.length === 0
+                ? null
+                : h(
+                    "div",
+                    { style: styles.boardCards },
+                    inProgress.map((card) =>
+                      h(
+                        "div",
+                        { key: "ip-" + card.id, style: styles.boardCardLine, "data-kanban-children-inprogress": String(card.id) },
+                        h("span", { style: styles.cardId }, "#" + card.id),
+                        h("span", { style: styles.boardCardTitle }, card.title || ""),
+                        h("span", { style: styles.meta }, [card.owner || t("noOwner"), card.role ? roleLabel(card.role, t) : ""].filter(Boolean).join(" · ")),
+                        card.updated ? h("span", { style: styles.meta }, card.updated) : null
+                      )
+                    )
+                  ),
+              (board.problems || []).map((problem, index) =>
+                h("div", { key: "bp-" + index, style: styles.note }, problem)
+              )
+            )
+          );
+        }
+        body.push(h("div", { key: "tree", style: styles.tree, "data-kanban-children-tree": "1" }, rows));
+      }
+
+      return h("div", { style: styles.root, "data-kanban-children-phase": state.phase }, body);
+    }
+
+    /** Заголовок второй вкладки. */
+    function ChildrenTitle(props) {
+      return h("span", null, props.t ? props.t("children.title") : "Child boards");
+    }
+
+    const ru = {
+      title: "Канбан",
+      guide: "Задачи агентов: что заготовлено в бэклоге, что в очереди, что в работе, что на ревью, что на проверке и что уже влито",
+      cards: "карточек",
+      noWorkspace: "нет рабочей директории",
+      noOwner: "не назначено",
+      inBranch: "в ветке",
+      tokens: "токенов",
+      since: "с",
+      spec: "Спека",
+      details: "Детали задачи",
+      description: "Описание",
+      comments: "Комментарии",
+      noComments: "Комментариев пока нет",
+      session: "Сессия",
+      close: "Закрыть",
+      "role.worker": "исполнитель",
+      "role.reviewer": "ревьювер",
+      "role.verifier": "тестировщик",
+      "role.dispatcher": "оркестратор",
+      refresh: "Обновить сейчас",
+      error: "Ошибка чтения доски",
+      problems: "Часть карточек не прочитана",
+      truncated: "Список файлов обрезан (слишком много карточек)",
+      missing: "Карточек пока нет: каталог .kanban/tasks пуст или отсутствует.",
+      "column.backlog": "Бэклог",
+      "column.todo": "Нужно сделать",
+      "column.in-progress": "В работе",
+      "column.in-review": "На ревью",
+      "column.testing": "Тестирование",
+      "column.ready": "Готово к слиянию",
+      "column.merged": "Влито",
+      "column.blocked": "Заблокировано",
+      "move.assign": "→ В работу",
+      "move.unassign": "← В backlog",
+      "move.assignTitle": "Отдать карточку самому свободному исполнителю",
+      "move.unassignTitle": "Вернуть карточку в backlog",
+      "move.busy": "переношу…",
+      "move.done": "перенесено",
+      "move.failed": "не удалось перенести карточку",
+      "move.onlyAgents": "эту карточку двигают только агенты",
+      "move.unavailable": "канал недоступен: обновите страницу, а после обновления плагина перезапустите приложение",
+      "children.title": "Дочерние доски",
+      "children.guide": "Обзор досок дерева команд из .kanban/children.json: счётчики по статусам, карточки в работе и доски детей только для чтения",
+      "children.boards": "досок",
+      "children.loading": "читаю манифест…",
+      "children.error": "Обзор дочерних досок не прочитан",
+      "children.unavailable": "канал обзора недоступен: обновите страницу, а после обновления плагина перезапустите приложение",
+      "children.noManifest": "Манифеста .kanban/children.json нет. Соберите его в этой папке:",
+      "children.broken": "Манифест .kanban/children.json не разобран — исправьте JSON и обновите.",
+      "children.empty": "В манифесте нет ни одной доски.",
+      "children.missing": "нет доски",
+      "children.back": "к списку досок",
+      "children.columnEmpty": "пусто",
+      "children.updated": "обновлено"
+    };
+
+    const en = {
+      title: "Kanban",
+      guide: "Agent tasks: what is queued in the backlog, in progress, in review, in testing, and merged",
+      cards: "cards",
+      noWorkspace: "no workspace",
+      noOwner: "unassigned",
+      inBranch: "in branch",
+      tokens: "tokens",
+      details: "Card details",
+      description: "Description",
+      comments: "Comments",
+      noComments: "No comments yet",
+      session: "Session",
+      close: "Close",
+      since: "since",
+      spec: "Spec",
+      "role.worker": "executor",
+      "role.reviewer": "reviewer",
+      "role.verifier": "tester",
+      "role.dispatcher": "orchestrator",
+      refresh: "Refresh now",
+      error: "Board read failed",
+      problems: "Some cards could not be read",
+      truncated: "File listing truncated (too many cards)",
+      missing: "No cards yet: .kanban/tasks is empty or missing.",
+      "column.backlog": "Backlog",
+      "column.todo": "Todo",
+      "column.in-progress": "In progress",
+      "column.in-review": "In review",
+      "column.testing": "Testing",
+      "column.ready": "Ready to merge",
+      "column.merged": "Merged",
+      "column.blocked": "Blocked",
+      "move.assign": "→ To work",
+      "move.unassign": "← To backlog",
+      "move.assignTitle": "Hand the card to the freest worker",
+      "move.unassignTitle": "Return the card to the backlog",
+      "move.busy": "moving…",
+      "move.done": "moved",
+      "move.failed": "could not move the card",
+      "move.onlyAgents": "only agents move this card",
+      "move.unavailable": "channel unavailable: reload the page, and restart the app after a plugin update",
+      "children.title": "Child boards",
+      "children.guide": "Overview of the team board tree from .kanban/children.json: status counters, cards in progress, and child boards read-only",
+      "children.boards": "boards",
+      "children.loading": "reading manifest…",
+      "children.error": "Child boards overview failed",
+      "children.unavailable": "overview channel unavailable: reload the page, and restart the app after a plugin update",
+      "children.noManifest": "No .kanban/children.json manifest. Build it in this folder:",
+      "children.broken": ".kanban/children.json is not valid JSON — fix it and refresh.",
+      "children.empty": "The manifest lists no boards.",
+      "children.missing": "board missing",
+      "children.back": "back to boards",
+      "children.columnEmpty": "empty",
+      "children.updated": "updated"
+    };
+
+    /** Сервисы Cordis, без которых `apply` не запускается. */
+    const inject = ["slots", "locale", "sidebarRightTabs", "remote", "remote.workspaceFiles", "connection"];
+
+    /** Тело плагина: тип таба, словари, тело и заголовок. */
+    function apply(ctx) {
+      ctx.effect(() => ctx.locale.register(NS, { en, ru }), "dsh-kanban: dictionaries");
+      const t = ctx.locale.bind(NS);
+
+      ctx.effect(
+        () =>
+          ctx.sidebarRightTabs.register({
+            id: ID,
+            kind: KIND,
+            priority: "extension",
+            title: () => t("title"),
+            guide: [{ order: 30, title: () => t("title"), description: () => t("guide") }]
+          }),
+        "dsh-kanban: tab type"
+      );
+
+      const loadBoard = createLoader(ctx.remote);
+      // Канал перемещения карточки живёт на хосте (#047): клиент только читает файлы.
+      const moveCard = createCardMover(ctx.connection);
+
+      // Вторая вкладка — «Дочерние доски» (#059): только чтение, поэтому у неё
+      // нет ни канала перемещения, ни обработчиков drag&drop.
+      ctx.effect(
+        () =>
+          ctx.sidebarRightTabs.register({
+            id: CHILDREN_ID,
+            kind: CHILDREN_KIND,
+            priority: "extension",
+            title: () => t("children.title"),
+            guide: [{ order: 31, title: () => t("children.title"), description: () => t("children.guide") }]
+          }),
+        "dsh-kanban: children tab type"
+      );
+      const readChildren = createChildrenReader(ctx.connection);
+      ctx.effect(
+        () =>
+          ctx.slots.inject("sidebar.right.pane.tab", () =>
+            ctx.slots.register(
+              { name: "sidebar.right.pane.tab", key: CHILDREN_ID, locale: NS, inject: childrenFace(readChildren) },
+              ChildrenBody
+            )
+          ),
+        "dsh-kanban: children body"
+      );
+      ctx.effect(
+        () =>
+          ctx.slots.inject("sidebar.right.pane.tab.title", () =>
+            ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: CHILDREN_ID, locale: NS }, ChildrenTitle)
+          ),
+        "dsh-kanban: children title"
+      );
+      ctx.effect(
+        () =>
+          ctx.slots.inject("sidebar.right.pane.tab", () =>
+            ctx.slots.register(
+              { name: "sidebar.right.pane.tab", key: ID, locale: NS, inject: boardFace(loadBoard, moveCard) },
+              KanbanBody
+            )
+          ),
+        "dsh-kanban: board body"
+      );
+      ctx.effect(
+        () =>
+          ctx.slots.inject("sidebar.right.pane.tab.title", () =>
+            ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: ID, locale: NS }, KanbanTitle)
+          ),
+        "dsh-kanban: board title"
+      );
+    }
+
+    exports.apply = apply;
+    exports.inject = inject;
+    // Внутренности для тестов и генератора макета (dsh-kanban/test,
+    // dsh-kanban/docs): рантайм DSH их не использует, браузеру они не мешают.
+    exports.__internals = {
+      parseCard,
+      parseFrontMatter,
+      normalizeStatus,
+      createLoader,
+      readManifest,
+      listWorktreeCards,
+      isNewer,
+      compareCards,
+      splitCardBody,
+      createCardMover,
+      CARD_ACTIONS,
+      CARD_DROPS,
+      CardDetails,
+      styles,
+      COLUMNS,
+      // Вкладка «Дочерние доски» (#059): читатель, лицо и компоненты — только чтение.
+      createChildrenReader,
+      childrenFace,
+      boardDepth,
+      childrenCounts,
+      childrenInProgress,
+      ChildrenBody,
+      ChildrenTitle,
+      ChildrenCard,
+      ChildrenCardDetails,
+      CHILDREN_ID,
+      CHILDREN_KIND,
+      CHILDREN_COMMAND
+    };
+    return module.exports;
+  }
+});

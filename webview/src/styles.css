@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground, #cccccc);
+  background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.dsh-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.dsh-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+}
+
+.dsh-panel__header h1 {
+  margin: 0;
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.dsh-panel__status {
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.85em;
+}
+
+.dsh-panel__body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+}
+
+.dsh-panel__hint {
+  opacity: 0.7;
+}
