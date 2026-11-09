@@ -10,7 +10,36 @@
 export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
 
 /** Сообщения extension host → WebView. */
-export const EXTENSION_MESSAGE_TYPES = ['state', 'message', 'status', 'replaceMessages'] as const;
+export const EXTENSION_MESSAGE_TYPES = [
+  'state',
+  'message',
+  'status',
+  'replaceMessages',
+  'chatStatus',
+  'chatToken',
+  'chatToolCall',
+  'chatToolResult',
+  'chatDone',
+  'chatCancelled'
+] as const;
+
+/** Статус потока ответа. */
+export type ChatStreamStatus = 'idle' | 'streaming' | 'cancelled' | 'error';
+
+/** Вызов инструмента агента. */
+export interface ChatToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+}
+
+/** Результат инструмента. */
+export interface ChatToolResult {
+  readonly callId: string;
+  readonly ok: boolean;
+  readonly result?: unknown;
+  readonly error?: string;
+}
 
 /** Роль автора сообщения. */
 export type ChatRole = 'user' | 'assistant' | 'system';
@@ -45,4 +74,10 @@ export type ExtensionToWebview =
   | { readonly type: 'state'; readonly state: ChatPanelState }
   | { readonly type: 'message'; readonly message: ChatMessage }
   | { readonly type: 'status'; readonly status: ChatPanelStatus }
-  | { readonly type: 'replaceMessages'; readonly messages: readonly ChatMessage[] };
+  | { readonly type: 'replaceMessages'; readonly messages: readonly ChatMessage[] }
+  | { readonly type: 'chatStatus'; readonly status: ChatStreamStatus; readonly detail?: string }
+  | { readonly type: 'chatToken'; readonly turnId: string; readonly text: string }
+  | { readonly type: 'chatToolCall'; readonly call: ChatToolCall }
+  | { readonly type: 'chatToolResult'; readonly result: ChatToolResult }
+  | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
+  | { readonly type: 'chatCancelled' };
