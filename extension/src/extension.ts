@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
 import type { ChatPanelStateDto } from './views/chatHtml';
+import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
 
 /**
@@ -35,6 +36,24 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
 let statusBarItem: vscode.StatusBarItem | undefined;
 
 /**
+ * Менеджер сессий появляется после подключения моста DSH и воркспейса (#011).
+ * До этого команды сессий честно сообщают, что мост не подключён.
+ */
+let sessionManager: SessionManager | null = null;
+
+/** Подключить менеджер сессий (вызывает #011 после старта моста). */
+export function setSessionManager(manager: SessionManager | null): void {
+  sessionManager = manager;
+}
+
+/** Команды, которые обслуживает SessionManager (не заглушки). */
+const SESSION_COMMANDS = new Set<string>([
+  COMMAND_IDS.newSession,
+  COMMAND_IDS.resumeLastSession,
+  COMMAND_IDS.stopAgent
+]);
+
+/**
  * Активация расширения: статус-бар воркспейса и команды-заглушки.
  *
  * Воркспейс здесь определяется по первой открытой папке — полноценный
@@ -60,10 +79,27 @@ export function activate(context: vscode.ExtensionContext): void {
   updateStatusBar();
 
   for (const command of Object.values(COMMAND_IDS)) {
+    if (SESSION_COMMANDS.has(command)) {
+      continue;
+    }
     context.subscriptions.push(
       vscode.commands.registerCommand(command, () => runCommand(command))
     );
   }
+
+  const sessionCommands = createSessionCommands({
+    getManager: () => sessionManager,
+    ui: {
+      notify: (message) => vscode.window.showInformationMessage(message)
+    }
+  });
+  context.subscriptions.push(
+    vscode.commands.registerCommand(COMMAND_IDS.newSession, () => sessionCommands.newSession()),
+    vscode.commands.registerCommand(COMMAND_IDS.resumeLastSession, () =>
+      sessionCommands.resumeLast()
+    ),
+    vscode.commands.registerCommand(COMMAND_IDS.stopAgent, () => sessionCommands.stopAgent())
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
