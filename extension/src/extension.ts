@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
+import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -38,7 +39,8 @@ let statusBarItem: vscode.StatusBarItem | undefined;
  * `WorkspaceResolver` (realpath, git remote, multi-root) появится в задаче #002.
  */
 export function activate(context: vscode.ExtensionContext): void {
-  const log = vscode.window.createOutputChannel('DSH');
+  outputChannel = vscode.window.createOutputChannel('DSH');
+  const log = outputChannel;
   context.subscriptions.push(log);
   log.appendLine(
     `DSH for VS Code активирован: protocol ${PROTOCOL_VERSION}, workspace ${workspaceName()}`
@@ -60,6 +62,10 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand(command, () => runCommand(command))
     );
   }
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
+  );
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -99,4 +105,45 @@ async function runCommand(command: CommandId): Promise<void> {
   await vscode.window.showInformationMessage(
     `${COMMAND_TITLES[command]}: заглушка каркаса, реализуется в следующих задачах.`
   );
+}
+
+/**
+ * `DSH: Prune Workspaces` — GC реестра воркспейсов: удаляет записи, которые
+ * не открывали дольше `dsh.workspace.keepDays` дней.
+ */
+async function pruneWorkspaces(): Promise<void> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const registryDirectory = configuration.get<string>('workspace.registryPath');
+  const keepDays = configuration.get<number>('workspace.keepDays');
+
+  const options: { registryDir?: string; keepDays?: number } = {};
+  if (typeof registryDirectory === 'string' && registryDirectory.trim() !== '') {
+    options.registryDir = registryDirectory;
+  }
+  if (typeof keepDays === 'number' && Number.isFinite(keepDays)) {
+    options.keepDays = keepDays;
+  }
+
+  try {
+    const registry = new WorkspaceRegistry(options);
+    const removed = await registry.prune();
+    const message =
+      removed.length === 0
+        ? 'DSH: в реестре воркспейсов нечего чистить.'
+        : `DSH: удалено записей реестра — ${String(removed.length)}.`;
+    await vscode.window.showInformationMessage(message);
+    if (removed.length > 0) {
+      logLine(`реестр воркспейсов: удалено ${removed.join(', ')}`);
+    }
+  } catch (error) {
+    await vscode.window.showErrorMessage(
+      `DSH: не удалось почистить реестр воркспейсов: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+let outputChannel: vscode.OutputChannel | undefined;
+
+function logLine(line: string): void {
+  outputChannel?.appendLine(line);
 }
