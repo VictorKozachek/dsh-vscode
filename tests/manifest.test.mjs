@@ -23,6 +23,14 @@ const expectedCommands = {
   'dsh.openSettings': 'DSH: Open Settings'
 };
 
+/**
+ * Служебные команды вне §10 (добавляются задачами по мере надобности):
+ * id → заголовок. Сейчас — GC реестра воркспейсов (#003).
+ */
+const extraCommands = {
+  'dsh.pruneWorkspaces': 'DSH: Prune Workspaces'
+};
+
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */
 const expectedSettings = {
   'dsh.executablePath': { type: 'string', default: 'dsh' },
@@ -41,6 +49,8 @@ const expectedSettings = {
   'dsh.context.autoReload': { type: 'boolean', default: true },
   'dsh.context.maxBytes': { type: 'number', default: 262144 },
   'dsh.workspace.registryPath': { type: 'string', default: '~/.dsh/workspaces' },
+  // Не из §9: срок хранения записей реестра воркспейсов (#003), 90 дней.
+  'dsh.workspace.keepDays': { type: 'number', default: 90 },
   'dsh.kanban.enabled': { type: 'boolean', default: false },
   'dsh.telemetry.enabled': { type: 'boolean', default: false }
 };
@@ -64,12 +74,25 @@ test('манифест: @types/vscode не новее engines.vscode', () => {
 
 test('манифест: команды соответствуют §10 спецификации', () => {
   const commands = manifest.contributes.commands;
-  assert.equal(commands.length, Object.keys(expectedCommands).length);
-
   const actual = Object.fromEntries(
     commands.map((command) => [command.command, `${command.category}: ${command.title}`])
   );
-  assert.deepEqual(actual, expectedCommands);
+
+  // Все команды §10 на месте с правильными заголовками.
+  for (const [id, title] of Object.entries(expectedCommands)) {
+    assert.equal(actual[id], title, `команда ${id}`);
+  }
+  // Сверх §10 допустимы только известные служебные команды.
+  for (const [id, title] of Object.entries(actual)) {
+    if (!(id in expectedCommands)) {
+      assert.equal(title, extraCommands[id], `неизвестная команда ${id}`);
+    }
+  }
+  assert.equal(
+    commands.length,
+    Object.keys(expectedCommands).length + Object.keys(extraCommands).length,
+    'лишние команды должны быть перечислены в extraCommands'
+  );
 });
 
 test('манифест: настройки соответствуют §9 спецификации', () => {
