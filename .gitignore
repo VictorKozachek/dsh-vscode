@@ -36,3 +36,6 @@ pnpm-debug.log*
 # Task worktrees created by bin/task-new.sh
 worktrees/
 .worktrees/
+
+# pnpm store (создаётся при установке в рабочей директории сессии)
+.pnpm-store/
