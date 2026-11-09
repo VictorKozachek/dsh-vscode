@@ -522,7 +522,9 @@ export class DshBridge {
     }
 
     this.#setState('stopped');
-    this.#stopRequested = false;
+    // #stopRequested не сбрасываем: цикл запуска/рестарта может быть ещё в
+    // полёте (spawn/healthcheck), и он должен увидеть остановку. Сброс — только
+    // в начале start().
   }
 
   /** Синхронно снимает процесс и все таймеры. */
@@ -566,6 +568,11 @@ export class DshBridge {
       }
       try {
         await this.#spawnAndCheck();
+        if (this.#disposed || this.#stopRequested) {
+          // stop()/dispose() пришли, пока шёл spawn/healthcheck.
+          this.#killChild();
+          throw new DshBridgeError('запуск моста DSH отменён');
+        }
         this.#restartAttempts = 0;
         this.#setState('running');
         this.#flushQueue();
@@ -576,6 +583,9 @@ export class DshBridge {
           `не удалось поднять DSH (попытка ${String(attempt)}/${String(this.#maxRestartAttempts)}): ${lastError.message}`
         );
         this.#killChild();
+        if (this.#disposed || this.#stopRequested) {
+          throw new DshBridgeError('запуск моста DSH отменён');
+        }
         if (attempt < this.#maxRestartAttempts) {
           await delay(this.#restartDelay(attempt));
         }
@@ -741,6 +751,10 @@ export class DshBridge {
     this.#setState('restarting');
     try {
       await this.#spawnAndCheck();
+      if (this.#disposed || this.#stopRequested) {
+        this.#killChild();
+        return;
+      }
       this.#restartAttempts = 0;
       this.#setState('running');
       this.#log.appendLine('DSH перезапущен');
@@ -748,7 +762,9 @@ export class DshBridge {
     } catch (error) {
       this.#log.appendLine(`рестарт DSH не удался: ${describeError(error)}`);
       this.#killChild();
-      this.#scheduleRestart();
+      if (!this.#disposed && !this.#stopRequested) {
+        this.#scheduleRestart();
+      }
     }
   }
 

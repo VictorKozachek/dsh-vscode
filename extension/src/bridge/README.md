@@ -43,6 +43,7 @@ const tokens = bridge.on('token', (payload) => append(payload.text));
 | Ошибки потоков | на stdin/stdout висят обработчики `error`: EPIPE/`ERR_STREAM_DESTROYED` логируются, peer закрывается, висящие запросы отклоняются |
 | Буферизация | запросы, пришедшие в `starting`/`restarting`, ждут процесса и уходят после успешного healthcheck; `AbortSignal` сохраняется и срабатывает и для буферизованных запросов |
 | Graceful shutdown | `stop()`: SIGTERM → `shutdownGraceMs` → SIGKILL; `dispose()` синхронно снимает процесс и таймеры (`processCount === 0`) |
+| Остановка во время старта/рестарта | `stop()`/`dispose()` не сбрасывают флаг остановки до следующего `start()`; цикл запуска после `spawn`/healthcheck проверяет его, снимает процесс и прекращает ретраи — «остановили, а процесс жив» невозможно |
 | Логи | stdout-мусор, `[rpc]`-ошибки, `[stderr]` процесса — всё в `OutputChannel` «DSH» |
 
 События сервера (`token`, `tool.call`, `tool.result`, `approval.request`,

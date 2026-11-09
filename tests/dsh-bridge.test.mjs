@@ -397,3 +397,78 @@ test('отмена буферизованного запроса срабаты�
   await started;
   assert.equal(bridge.state, 'running');
 });
+
+test('stop() во время запуска не оставляет процесс и не продолжает ретраи', async (t) => {
+  const { bridge, logs } = createBridge(t, {
+    mode: 'slow-ping',
+    options: { healthcheckTimeoutMs: 2000, maxRestartAttempts: 2 }
+  });
+
+  const started = bridge.start().catch((error) => error);
+  await sleep(50);
+  await bridge.stop();
+
+  const logsAfterStop = logs.length;
+  await sleep(700);
+
+  assert.equal(bridge.state, 'stopped');
+  assert.equal(bridge.processCount, 0);
+  assert.ok(
+    !logs.slice(logsAfterStop).some((line) => line.includes('запущен процесс DSH')),
+    'после stop новые процессы не запускаются'
+  );
+
+  const startResult = await started;
+  assert.ok(startResult instanceof DshBridgeError);
+  assert.match(startResult.message, /отменён|healthcheck/);
+});
+
+test('dispose() во время запуска не оставляет процесс', async (t) => {
+  const { bridge } = createBridge(t, {
+    mode: 'slow-ping',
+    options: { healthcheckTimeoutMs: 2000, maxRestartAttempts: 2 }
+  });
+
+  const started = bridge.start().catch((error) => error);
+  await sleep(50);
+  bridge.dispose();
+
+  await sleep(700);
+  assert.equal(bridge.state, 'stopped');
+  assert.equal(bridge.processCount, 0);
+  await started;
+});
+
+test('stop() во время рестарта не оставляет процесс', async (t) => {
+  const { bridge } = createBridge(t, { mode: 'crash-after-ready' });
+  await bridge.start();
+
+  await waitFor(
+    () => bridge.state === 'restarting' || bridge.state === 'running',
+    'состояние после падения процесса'
+  );
+  await bridge.stop();
+
+  await sleep(400);
+  assert.equal(bridge.state, 'stopped');
+  assert.equal(bridge.processCount, 0);
+});
+
+test('отмена запроса после flush (мост running, сервер молчит)', async (t) => {
+  const { bridge } = createBridge(t, { mode: 'no-response' });
+  await bridge.start();
+  assert.equal(bridge.state, 'running');
+
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const request = bridge.request('session.list', {}, { signal: controller.signal, timeoutMs: 5000 });
+  setTimeout(() => {
+    controller.abort();
+  }, 100);
+
+  await assert.rejects(request, /отменён/);
+  assert.ok(
+    Date.now() - startedAt < 400,
+    `отмена заняла ${String(Date.now() - startedAt)} мс вместо мгновенной`
+  );
+});
