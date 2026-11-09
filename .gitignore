@@ -25,3 +25,14 @@ pnpm-debug.log*
 # Editors & tooling
 .idea/
 *.vsix
+
+# Kanban board service files (machine-local, not part of the repository)
+.kanban/.watcher-state.json
+.kanban/.watcher-roles.json
+.kanban/.watcher-pending.json
+.kanban/.workers.json
+.kanban/worktrees.json
+
+# Task worktrees created by bin/task-new.sh
+worktrees/
+.worktrees/
