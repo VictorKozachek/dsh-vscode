@@ -536,6 +536,8 @@ export class ContextLoader {
   #watcher: FSWatcher | undefined;
   #watcherTimer: NodeJS.Timeout | undefined;
   #watchListeners = new Set<(pack: ContextPack) => void>();
+  /** Пути из манифеста (rules/skills/memory) — их изменения тоже пересобирают пак. */
+  #manifestWatchPaths: string[] = [];
   #disposed = false;
 
   constructor(options: ContextLoaderOptions) {
@@ -607,6 +609,7 @@ export class ContextLoader {
   dispose(): void {
     this.#disposed = true;
     this.#watchListeners.clear();
+    this.#manifestWatchPaths = [];
     this.#stopWatcher();
     this.#cachedPack = undefined;
     this.#cachedFingerprint = undefined;
@@ -638,6 +641,16 @@ export class ContextLoader {
     }
     for (const rule of walked.ruleFiles) {
       inputs.push(`rule:${rule.relativePath}:${String(rule.mtimeMs)}:${String(rule.size)}`);
+    }
+    // Правила из манифеста могут не попасть в индекс (например, каталог в
+    // .gitignore) — без их mtime кэш не инвалидировался бы.
+    for (const rule of await this.#loadableManifestRules(parsed.manifest)) {
+      const stats = await stat(rule.absolutePath).catch(() => null);
+      if (stats !== null) {
+        inputs.push(
+          `manifest-rule:${rule.relativePath}:${String(stats.mtimeMs)}:${String(stats.size)}`
+        );
+      }
     }
 
     for (const directory of await this.#skillsDirectories(parsed.manifest)) {
@@ -752,6 +765,7 @@ export class ContextLoader {
     const parsed = manifest === null ? { manifest: null, warnings: [] } : parseWorkspaceManifest(manifest.text);
     const maxBytes = parsed.manifest?.context?.maxBytes ?? DEFAULT_MAX_BYTES;
     const manifestWarnings = [...parsed.warnings, ...(await this.#validateManifest(parsed.manifest))];
+    this.#manifestWatchPaths = this.#collectManifestWatchPaths(parsed.manifest);
 
     const rules = await this.#loadRules(collected.ruleFiles, parsed.manifest, maxBytes);
     const skills = await this.#loadSkills(parsed.manifest);
@@ -858,21 +872,14 @@ export class ContextLoader {
 
     // `rules` из манифеста (§4.3): дополнительные файлы правил проекта.
     // Проходят те же границы, что и остальной пак: внутри воркспейса после
-    // realpath (symlink наружу не проходит) и не секретные/служебные имена.
-    for (const entry of manifest?.rules ?? []) {
-      const relativePath = normalizeRelativePath(entry);
-      if ((await this.#manifestPathRejection(relativePath, 'file')) !== null) {
-        continue;
-      }
-      const absolutePath = await this.#resolveInsideRoot(relativePath);
-      if (absolutePath === null) {
-        continue;
-      }
-      const text = await this.#readAbsolute(absolutePath);
+    // realpath (symlink наружу и symlink на секрет не проходят) и не
+    // секретные/служебные имена.
+    for (const rule of await this.#loadableManifestRules(manifest)) {
+      const text = await this.#readAbsolute(rule.absolutePath);
       if (text === null) {
         continue;
       }
-      addRule(relativePath, 'project', relativePath, text);
+      addRule(rule.relativePath, 'project', rule.relativePath, text);
     }
 
     const userRulesPath = path.join(this.#home, '.dsh', USER_RULES_FILE);
@@ -1056,6 +1063,13 @@ export class ContextLoader {
     if (absolute === null) {
       return 'не найден или ведёт за пределы воркспейса (symlink)';
     }
+    // Симлинк внутри воркспейса может вести на секрет/служебный файл:
+    // проверяем уже реальный путь, а не запрошенный.
+    const realRoot = await realpath(this.#root).catch(() => this.#root);
+    const realRelative = toPosix(path.relative(realRoot, absolute));
+    if (this.#isForbiddenManifestPath(realRelative)) {
+      return 'ведёт на секретный или служебный путь (symlink)';
+    }
     const stats = await stat(absolute).catch(() => null);
     if (stats === null) {
       return 'не найден';
@@ -1067,6 +1081,71 @@ export class ContextLoader {
       return 'не каталог';
     }
     return null;
+  }
+
+  /** Файлы правил из манифеста, прошедшие проверки границ и секретов. */
+  async #loadableManifestRules(
+    manifest: WorkspaceManifest | null
+  ): Promise<readonly { relativePath: string; absolutePath: string }[]> {
+    const rules: { relativePath: string; absolutePath: string }[] = [];
+    const seen = new Set<string>();
+    for (const entry of manifest?.rules ?? []) {
+      const relativePath = normalizeRelativePath(entry);
+      if (seen.has(relativePath)) {
+        continue;
+      }
+      if ((await this.#manifestPathRejection(relativePath, 'file')) !== null) {
+        continue;
+      }
+      const absolutePath = await this.#resolveInsideRoot(relativePath);
+      if (absolutePath === null) {
+        continue;
+      }
+      seen.add(relativePath);
+      rules.push({ relativePath, absolutePath });
+    }
+    return rules;
+  }
+
+  /** Относительные пути из манифеста, за которыми следит watcher. */
+  #collectManifestWatchPaths(manifest: WorkspaceManifest | null): string[] {
+    if (manifest === null) {
+      return [];
+    }
+    const paths = new Set<string>();
+    for (const entry of manifest.rules ?? []) {
+      const relative = normalizeRelativePath(entry);
+      if (relative !== '') {
+        paths.add(relative);
+      }
+    }
+    for (const entry of manifest.skills ?? []) {
+      const relative = normalizeRelativePath(entry).replace(/\/+$/, '');
+      if (relative !== '') {
+        paths.add(relative);
+      }
+    }
+    if (manifest.memory?.enabled === true && manifest.memory.path !== undefined) {
+      const relative = normalizeRelativePath(manifest.memory.path).replace(/\/+$/, '');
+      if (relative !== '') {
+        paths.add(relative);
+      }
+    }
+    return [...paths];
+  }
+
+  /** Изменение файла из манифеста (rules/skills/memory) тоже пересобирает пак. */
+  #isRelevantChange(filename: string | null): boolean {
+    if (filename === null) {
+      return true;
+    }
+    if (isRelevantContextFile(filename)) {
+      return true;
+    }
+    const normalized = filename.replace(/\\/g, '/');
+    return this.#manifestWatchPaths.some(
+      (watched) => normalized === watched || normalized.startsWith(`${watched}/`)
+    );
   }
 
   /** Реальный путь внутри воркспейса или `null` (symlink наружу не проходит). */
@@ -1198,7 +1277,7 @@ export class ContextLoader {
     }
     try {
       this.#watcher = watchFs(this.#root, { recursive: true }, (_eventType, filename) => {
-        if (!isRelevantContextFile(filename)) {
+        if (!this.#isRelevantChange(filename)) {
           return;
         }
         this.#scheduleReload();
@@ -1359,6 +1438,11 @@ function normalizeRelativePath(value: string): string {
   let normalized = toPosix(value).trim();
   while (normalized.startsWith('./')) {
     normalized = normalized.slice(2);
+  }
+  // `docs/../AGENTS.md` должен дедуплицироваться с `AGENTS.md`; границы при
+  // этом проверяются отдельно (#isSafeManifestPath), так что `../x` не пройдёт.
+  if (normalized !== '' && !path.posix.isAbsolute(normalized)) {
+    normalized = path.posix.normalize(normalized).replace(/^\.\/+/, '');
   }
   return normalized;
 }

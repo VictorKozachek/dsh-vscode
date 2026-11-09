@@ -603,3 +603,115 @@ test('truncateToBytes: граница многобайтного символа 
 
   loader.dispose();
 });
+
+test('manifest rules: симлинк внутри root на секрет/служебный файл не читается', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ rules: ['docs/rules.md', 'docs/nm.md'] }),
+    '.env': 'SECRET_TOKEN=leak\n',
+    'AGENTS.md': '# Корень\n',
+    'src/app.ts': 'export {};\n'
+  });
+  await mkdir(path.join(root, 'node_modules', 'pkg'), { recursive: true });
+  await writeFile(path.join(root, 'node_modules', 'pkg', 'rules.md'), '# из node_modules\n');
+  await mkdir(path.join(root, 'docs'), { recursive: true });
+  await symlink('../.env', path.join(root, 'docs', 'rules.md'), 'file');
+  await symlink('../node_modules/pkg/rules.md', path.join(root, 'docs', 'nm.md'), 'file');
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+
+  assert.ok(
+    !pack.rules.some((rule) => rule.text.includes('SECRET_TOKEN')),
+    'секрет не должен попасть в правила через симлинк'
+  );
+  assert.ok(!pack.rules.some((rule) => rule.text.includes('из node_modules')));
+  assert.ok(
+    pack.manifestWarnings.some((warning) => warning.includes('docs/rules.md') && warning.includes('symlink')),
+    'предупреждение про симлинк на .env'
+  );
+  assert.ok(
+    pack.manifestWarnings.some((warning) => warning.includes('docs/nm.md') && warning.includes('symlink')),
+    'предупреждение про симлинк на node_modules'
+  );
+
+  loader.dispose();
+});
+
+test('кэш: manifest-правило вне индекса (в .gitignore) инвалидирует пак', async () => {
+  const { root, home } = await makeCase({
+    '.gitignore': 'docs/\n',
+    '.dsh/workspace.json': JSON.stringify({ rules: ['docs/IGNORED.md'] }),
+    'docs/IGNORED.md': '# версия 1\n',
+    'src/app.ts': 'export {};\n'
+  });
+
+  const loader = makeLoader(root, home);
+  const first = await loader.load();
+  assert.equal(loader.lastCacheHit, false);
+  assert.match(first.rules.find((rule) => rule.path === 'docs/IGNORED.md')?.text ?? '', /версия 1/);
+  assert.ok(!first.files.some((file) => file.path === 'docs/IGNORED.md'), 'файл не в индексе');
+
+  await writeFile(path.join(root, 'docs', 'IGNORED.md'), '# версия 2 — новее и длиннее\n');
+  const second = await loader.load();
+
+  assert.equal(loader.lastCacheHit, false, 'кэш должен инвалидироваться по mtime manifest-правила');
+  assert.match(second.rules.find((rule) => rule.path === 'docs/IGNORED.md')?.text ?? '', /версия 2/);
+
+  loader.dispose();
+});
+
+test('hot reload: изменения manifest rules/skills пересобирают пак', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ rules: ['docs/CONVENTIONS.md'], skills: ['.custom-skills'] }),
+    'docs/CONVENTIONS.md': '# версия 1\n',
+    '.custom-skills/foo/SKILL.md': '---\nname: foo\ndescription: Версия 1\n---\n',
+    'src/app.ts': 'export {};\n'
+  });
+
+  const loader = makeLoader(root, home);
+  await loader.load();
+
+  const packs = [];
+  const unsubscribe = loader.watch((pack) => {
+    packs.push(pack);
+  });
+
+  try {
+    await writeFile(path.join(root, 'docs', 'CONVENTIONS.md'), '# версия 2\n');
+    await waitFor(
+      () => packs.some((pack) => pack.rules.some((rule) => rule.text.includes('версия 2'))),
+      'пересборка после изменения manifest-правила'
+    );
+
+    await writeFile(
+      path.join(root, '.custom-skills', 'foo', 'SKILL.md'),
+      '---\nname: foo\ndescription: Версия 2\n---\n'
+    );
+    await waitFor(
+      () => packs.some((pack) => pack.skills.some((skill) => skill.description === 'Версия 2')),
+      'пересборка после изменения manifest-скила'
+    );
+  } finally {
+    unsubscribe();
+    loader.dispose();
+  }
+});
+
+test('manifest rules: docs/../AGENTS.md дедуплицируется с AGENTS.md', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ rules: ['docs/../AGENTS.md'] }),
+    'AGENTS.md': '# Единственные правила\n',
+    'src/app.ts': 'export {};\n'
+  });
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+
+  assert.equal(
+    pack.rules.filter((rule) => rule.path === 'AGENTS.md').length,
+    1,
+    'путь со ./.. должен нормализоваться и не дублироваться'
+  );
+
+  loader.dispose();
+});
