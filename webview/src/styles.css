@@ -258,3 +258,175 @@ body {
     animation: none !important;
   }
 }
+
+/* --- потоковый чат и tool-call блоки ------------------------------------- */
+
+.dsh-markdown > :first-child {
+  margin-top: 0;
+}
+
+.dsh-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.dsh-markdown h1,
+.dsh-markdown h2,
+.dsh-markdown h3 {
+  margin: 0.6em 0 0.3em;
+  font-size: 1.05em;
+}
+
+.dsh-markdown p {
+  margin: 0.4em 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dsh-markdown ul,
+.dsh-markdown ol {
+  margin: 0.3em 0;
+  padding-left: 1.4em;
+}
+
+.dsh-markdown code {
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+
+.dsh-markdown blockquote {
+  margin: 0.4em 0;
+  padding-left: 0.8em;
+  border-left: 2px solid var(--vscode-textBlockQuote-border, var(--vscode-panel-border));
+  opacity: 0.9;
+}
+
+.dsh-markdown a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.dsh-markdown a:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.dsh-code {
+  margin: 0.5em 0;
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dsh-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.12));
+}
+
+.dsh-code__language {
+  opacity: 0.8;
+}
+
+.dsh-code__body {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 0.95em;
+}
+
+.dsh-button--ghost {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  border-color: transparent;
+  padding: 2px 6px;
+}
+
+.dsh-tool {
+  margin: 0.5em 0;
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+}
+
+.dsh-tool__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+
+.dsh-tool__name {
+  font-weight: 600;
+}
+
+.dsh-tool__status,
+.dsh-tool__duration {
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+
+.dsh-tool--error .dsh-tool__status {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.dsh-tool__body {
+  margin-top: 6px;
+}
+
+.dsh-tool__label {
+  margin: 4px 0 2px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+
+.dsh-tool__pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+}
+
+.dsh-tool__error {
+  margin: 4px 0 0;
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.dsh-message__state--streaming {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-top: 2px;
+  background: var(--vscode-editorCursor-foreground, var(--vscode-foreground));
+  animation: dsh-caret 1s steps(2, start) infinite;
+  vertical-align: text-bottom;
+}
+
+@keyframes dsh-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+.dsh-message__state-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+.dsh-message__state-badge--error {
+  color: var(--vscode-errorForeground, #f14c4c);
+  border-color: var(--vscode-errorForeground, #f14c4c);
+}
