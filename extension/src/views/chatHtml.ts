@@ -37,15 +37,50 @@ export type WebviewMessage =
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
 export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
 
+/** Статус потока ответа в панели. */
+export type ChatStreamStatus = 'idle' | 'streaming' | 'cancelled' | 'error';
+
+/** Вызов инструмента агента (`tool.call`). */
+export interface ChatToolCallDto {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+}
+
+/** Результат инструмента (`tool.result`). */
+export interface ChatToolResultDto {
+  readonly callId: string;
+  readonly ok: boolean;
+  readonly result?: unknown;
+  readonly error?: string;
+}
+
 /** Типы сообщений extension → WebView (для проверки паритета с webview/). */
-export const EXTENSION_MESSAGE_TYPES = ['state', 'message', 'status', 'replaceMessages'] as const;
+export const EXTENSION_MESSAGE_TYPES = [
+  'state',
+  'message',
+  'status',
+  'replaceMessages',
+  'chatStatus',
+  'chatToken',
+  'chatToolCall',
+  'chatToolResult',
+  'chatDone',
+  'chatCancelled'
+] as const;
 
 /** Сообщения extension → WebView. */
 export type ExtensionMessage =
   | { readonly type: 'state'; readonly state: ChatPanelStateDto }
   | { readonly type: 'message'; readonly message: ChatMessageDto }
   | { readonly type: 'status'; readonly status: ChatPanelStatus }
-  | { readonly type: 'replaceMessages'; readonly messages: readonly ChatMessageDto[] };
+  | { readonly type: 'replaceMessages'; readonly messages: readonly ChatMessageDto[] }
+  | { readonly type: 'chatStatus'; readonly status: ChatStreamStatus; readonly detail?: string }
+  | { readonly type: 'chatToken'; readonly turnId: string; readonly text: string }
+  | { readonly type: 'chatToolCall'; readonly call: ChatToolCallDto }
+  | { readonly type: 'chatToolResult'; readonly result: ChatToolResultDto }
+  | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
+  | { readonly type: 'chatCancelled' };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
