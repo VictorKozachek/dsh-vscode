@@ -130,9 +130,10 @@ export function renderChatViewNoticeHtml(options: {
   readonly title: string;
   readonly message: string;
   readonly hint: string;
+  readonly lang?: string;
 }): string {
   return `<!doctype html>
-<html lang="ru">
+<html lang="${escapeHtml(options.lang ?? 'ru')}">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${escapeHtml(options.cspSource)} 'unsafe-inline';" />
@@ -155,4 +156,177 @@ export function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// --- сборка HTML панели -----------------------------------------------------
+
+/** Источники для сборки HTML панели (без `vscode` — тестируется в Node). */
+export interface ChatViewHtmlInputs {
+  readonly cspSource: string;
+  readonly nonce: string;
+  readonly locale: 'ru' | 'en';
+  /** Читает `webview/dist/index.html`; `null` — WebView ещё не собран. */
+  readonly readIndexHtml: () => Promise<string | null>;
+  /** Переводит относительный путь ассета в webview-URI. */
+  readonly toWebviewUri: (relativePath: string) => string;
+}
+
+/**
+ * Собирает HTML панели: либо приложение из `webview/dist` с CSP и nonce, либо
+ * заглушку «соберите WebView». Ошибки чтения/разбора не пробрасываются наружу.
+ */
+export async function buildChatViewHtml(inputs: ChatViewHtmlInputs): Promise<string> {
+  let indexHtml: string | null = null;
+  try {
+    indexHtml = await inputs.readIndexHtml();
+  } catch {
+    indexHtml = null;
+  }
+
+  const assets = indexHtml === null ? null : extractViteAssets(indexHtml);
+  if (assets === null || assets.script === null) {
+    return renderChatViewNoticeHtml({
+      cspSource: inputs.cspSource,
+      title: 'DSH',
+      message: 'WebView ещё не собран — панель откроется после сборки.',
+      hint: 'pnpm build',
+      lang: inputs.locale
+    });
+  }
+
+  return renderChatViewHtml({
+    cspSource: inputs.cspSource,
+    nonce: inputs.nonce,
+    scriptUri: inputs.toWebviewUri(assets.script),
+    styleUri: assets.style === null ? null : inputs.toWebviewUri(assets.style),
+    title: 'DSH',
+    lang: inputs.locale
+  });
+}
+
+// --- сессия панели ----------------------------------------------------------
+
+/** Настройки `ChatSession`. */
+export interface ChatSessionOptions {
+  /** Текст ответа-эха (подменяется в тестах); локаль нужна для i18n. */
+  readonly echo?: ((text: string, locale: 'ru' | 'en') => string) | undefined;
+  /** Сколько сообщений держать в ленте. */
+  readonly maxMessages?: number | undefined;
+  /** Пауза перед ответом-эхом: статус `thinking` должен быть виден в UI. */
+  readonly replyDelayMs?: number | undefined;
+}
+
+const DEFAULT_MAX_MESSAGES = 200;
+const DEFAULT_REPLY_DELAY_MS = 150;
+
+/**
+ * Состояние панели без привязки к `vscode`: лента, статус и превращение
+ * сообщений WebView в исходящие сообщения extension host.
+ *
+ * `handle()` сразу отдаёт `thinking` и сообщение пользователя, а ответ-эхо и
+ * `idle` приходят через `emit` после `replyDelayMs` — так кнопка «Стоп»
+ * успевает стать активной, а её нажатие отменяет неотправленный ответ.
+ * Чистая логика — покрыта `tests/chat-session.test.mjs`; `ChatViewProvider`
+ * остаётся тонкой обвязкой (WebviewView + CSP + postMessage).
+ */
+export class ChatSession {
+  readonly #options: ChatSessionOptions;
+  readonly #messages: ChatMessageDto[] = [];
+  #status: ChatPanelStatus = 'idle';
+  #counter = 0;
+  #pendingReply: NodeJS.Timeout | undefined;
+
+  constructor(options: ChatSessionOptions = {}) {
+    this.#options = options;
+  }
+
+  get status(): ChatPanelStatus {
+    return this.#status;
+  }
+
+  get messages(): readonly ChatMessageDto[] {
+    return this.#messages;
+  }
+
+  /**
+   * Обрабатывает сообщение WebView. Возвращает сообщения на отправку сразу;
+   * ответ-эхо приходит в `emit` (если это `sendMessage`).
+   */
+  handle(
+    message: WebviewMessage,
+    state: () => Omit<ChatPanelStateDto, 'status'>,
+    emit: (message: ExtensionMessage) => void = () => undefined
+  ): ExtensionMessage[] {
+    if (message.kind === 'ready') {
+      const outgoing: ExtensionMessage[] = [
+        { type: 'state', state: { ...state(), status: this.#status } }
+      ];
+      if (this.#messages.length > 0) {
+        outgoing.push({ type: 'replaceMessages', messages: [...this.#messages] });
+      }
+      return outgoing;
+    }
+
+    if (message.kind === 'stop') {
+      this.#cancelPendingReply();
+      this.#status = 'stopped';
+      return [{ type: 'status', status: 'stopped' }];
+    }
+
+    const locale = state().locale;
+    this.#status = 'thinking';
+
+    const user = this.#make('user', message.text);
+    this.#push(user);
+
+    const delay = this.#options.replyDelayMs ?? DEFAULT_REPLY_DELAY_MS;
+    this.#cancelPendingReply();
+    this.#pendingReply = setTimeout(() => {
+      this.#pendingReply = undefined;
+      const fallback = locale === 'en' ? `Echo: ${message.text}` : `Эхо: ${message.text}`;
+      const reply = this.#options.echo?.(message.text, locale) ?? fallback;
+      const assistant = this.#make('assistant', reply);
+      this.#push(assistant);
+      this.#status = 'idle';
+      emit({ type: 'message', message: assistant });
+      emit({ type: 'status', status: 'idle' });
+    }, delay);
+    this.#pendingReply.unref?.();
+
+    return [
+      { type: 'status', status: 'thinking' },
+      { type: 'message', message: user }
+    ];
+  }
+
+  /** Сообщение из extension host: попадает в ленту и уходит в WebView. */
+  append(message: ChatMessageDto): ExtensionMessage[] {
+    this.#push(message);
+    return [{ type: 'message', message }];
+  }
+
+  /** Снимает неотправленный ответ (при закрытии панели). */
+  dispose(): void {
+    this.#cancelPendingReply();
+  }
+
+  #cancelPendingReply(): void {
+    if (this.#pendingReply !== undefined) {
+      clearTimeout(this.#pendingReply);
+      this.#pendingReply = undefined;
+    }
+  }
+
+  #make(role: ChatRole, text: string): ChatMessageDto {
+    this.#counter += 1;
+    return { id: `${role}-${String(this.#counter)}`, role, text };
+  }
+
+  #push(message: ChatMessageDto): void {
+    this.#messages.push(message);
+    const max = this.#options.maxMessages ?? DEFAULT_MAX_MESSAGES;
+    if (this.#messages.length > max) {
+      this.#messages.splice(0, this.#messages.length - max);
+    }
+  }
 }

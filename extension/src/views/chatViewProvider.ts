@@ -10,15 +10,14 @@
  * можно было покрыть тестами.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import * as vscode from 'vscode';
 
 import {
-  extractViteAssets,
+  ChatSession,
+  buildChatViewHtml,
   parseWebviewMessage,
-  renderChatViewHtml,
-  renderChatViewNoticeHtml,
   type ChatMessageDto,
   type ChatPanelStateDto,
   type ChatPanelStatus,
@@ -34,10 +33,11 @@ export interface ChatViewProviderOptions {
   /** Куда писать диагностику (OutputChannel «DSH»). */
   readonly log?: ((line: string) => void) | undefined;
   /** Текст ответа-эха на сообщение пользователя (подменяется в тестах). */
-  readonly echo?: ((text: string) => string) | undefined;
+  readonly echo?: ((text: string, locale: 'ru' | 'en') => string) | undefined;
 }
 
 const MAX_MESSAGES = 200;
+const REPLY_DELAY_MS = 150;
 
 /** Провайдер панели `dsh.chat`. */
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -45,23 +45,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'dsh.chat';
 
   readonly #options: ChatViewProviderOptions;
-  readonly #messages: ChatMessageDto[] = [];
-  #status: ChatPanelStatus = 'idle';
+  readonly #session: ChatSession;
   #view: vscode.WebviewView | undefined;
   #disposed = false;
 
   constructor(options: ChatViewProviderOptions) {
     this.#options = options;
+    this.#session = new ChatSession({
+      echo: options.echo,
+      maxMessages: MAX_MESSAGES,
+      replyDelayMs: REPLY_DELAY_MS
+    });
   }
 
   /** Сколько сообщений сейчас в ленте (для диагностики и тестов). */
   get messageCount(): number {
-    return this.#messages.length;
+    return this.#session.messages.length;
   }
 
   /** Текущий статус панели. */
   get status(): ChatPanelStatus {
-    return this.#status;
+    return this.#session.status;
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -99,12 +103,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Дополнить ленту сообщением из extension host. */
   async appendMessage(message: ChatMessageDto): Promise<void> {
-    this.#push(message);
-    await this.postMessage({ type: 'message', message });
+    for (const outgoing of this.#session.append(message)) {
+      await this.postMessage(outgoing);
+    }
   }
 
   dispose(): void {
     this.#disposed = true;
+    this.#session.dispose();
     this.#view = undefined;
   }
 
@@ -112,37 +118,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   async #render(webview: vscode.Webview, distUri: vscode.Uri): Promise<void> {
     const nonce = randomBytes(16).toString('base64');
-    let html: string;
+    const indexUri = vscode.Uri.joinPath(distUri, 'index.html');
 
-    try {
-      const indexUri = vscode.Uri.joinPath(distUri, 'index.html');
-      const content = await vscode.workspace.fs.readFile(indexUri);
-      const assets = extractViteAssets(new TextDecoder().decode(content));
-
-      if (assets.script === null) {
-        throw new Error('в webview/dist/index.html не найден скрипт');
-      }
-
-      html = renderChatViewHtml({
-        cspSource: webview.cspSource,
-        nonce,
-        scriptUri: this.#assetUri(webview, distUri, assets.script),
-        styleUri: assets.style === null ? null : this.#assetUri(webview, distUri, assets.style),
-        title: 'DSH'
-      });
-    } catch (error) {
-      this.#options.log?.(
-        `панель DSH: webview/dist не загружен (${error instanceof Error ? error.message : String(error)})`
-      );
-      html = renderChatViewNoticeHtml({
-        cspSource: webview.cspSource,
-        title: 'DSH',
-        message: 'WebView ещё не собран — панель откроется после сборки.',
-        hint: 'pnpm build'
-      });
-    }
-
-    webview.html = html;
+    webview.html = await buildChatViewHtml({
+      cspSource: webview.cspSource,
+      nonce,
+      locale: this.#options.state().locale,
+      readIndexHtml: async () => {
+        try {
+          const content = await vscode.workspace.fs.readFile(indexUri);
+          return new TextDecoder().decode(content);
+        } catch (error) {
+          this.#options.log?.(
+            `панель DSH: webview/dist не загружен (${error instanceof Error ? error.message : String(error)})`
+          );
+          return null;
+        }
+      },
+      toWebviewUri: (relative) => this.#assetUri(webview, distUri, relative)
+    });
   }
 
   #assetUri(webview: vscode.Webview, distUri: vscode.Uri, relative: string): string {
@@ -156,57 +150,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const message = parseWebviewMessage(raw);
     if (message === null) {
-      this.#options.log?.(`панель DSH: сообщение из WebView не по схеме`);
+      this.#options.log?.('панель DSH: сообщение из WebView не по схеме');
       return;
     }
 
-    switch (message.kind) {
-      case 'ready': {
-        await this.postMessage({ type: 'state', state: this.#state() });
-        if (this.#messages.length > 0) {
-          await this.postMessage({ type: 'replaceMessages', messages: [...this.#messages] });
-        }
-        return;
-      }
-      case 'stop': {
-        this.#setStatus('stopped');
-        await this.postMessage({ type: 'status', status: 'stopped' });
-        return;
-      }
-      case 'sendMessage': {
-        await this.#echo(message.text);
-        return;
-      }
+    const emitted = (outgoing: ExtensionMessage): void => {
+      void this.postMessage(outgoing);
+    };
+    for (const outgoing of this.#session.handle(message, () => this.#options.state(), emitted)) {
+      await this.postMessage(outgoing);
     }
   }
 
-  /**
-   * Эхо-сценарий каркаса: сообщение пользователя и ответ-заглушка в ленте.
-   * Настоящий обмен через DshBridge — задача #008.
-   */
-  async #echo(text: string): Promise<void> {
-    this.#setStatus('thinking');
-    await this.appendMessage({ id: randomUUID(), role: 'user', text });
-
-    const reply = this.#options.echo?.(text) ?? `Эхо: ${text}`;
-    await this.appendMessage({ id: randomUUID(), role: 'assistant', text: reply });
-
-    this.#setStatus('idle');
-    await this.postMessage({ type: 'status', status: 'idle' });
-  }
-
-  #push(message: ChatMessageDto): void {
-    this.#messages.push(message);
-    if (this.#messages.length > MAX_MESSAGES) {
-      this.#messages.splice(0, this.#messages.length - MAX_MESSAGES);
-    }
-  }
-
-  #state(): ChatPanelStateDto {
-    return { ...this.#options.state(), status: this.#status };
-  }
-
-  #setStatus(status: ChatPanelStatus): void {
-    this.#status = status;
-  }
 }

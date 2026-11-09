@@ -38,8 +38,18 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
   падения;
 - `retainContextWhenHidden: true`: панель не теряет ленту при переключении вкладок.
 
-Чистые части (разбор сообщений, HTML, экранирование) — `chatHtml.ts`: модуль без
-`vscode`, покрыт `tests/chat-view.test.mjs`.
+Чистые части — `chatHtml.ts` (модуль без `vscode`, покрыт `tests/chat-view.test.mjs`
+и `tests/chat-session.test.mjs`):
+
+- `parseWebviewMessage`, `extractViteAssets`, `renderChatViewHtml`,
+  `renderChatViewNoticeHtml` — разбор и HTML-оболочка с CSP;
+- `buildChatViewHtml` — сборка страницы из `webview/dist` (или заглушка), `lang`
+  берётся из локали панели;
+- `ChatSession` — лента/статус и обработка сообщений WebView: `ready` → `state`
+  (+ `replaceMessages`), `sendMessage` → сразу `thinking` + сообщение
+  пользователя, через 150 мс — ответ-эхо и `idle`; `stop` отменяет неотправленный
+  ответ и включает `stopped`. Благодаря паузе кнопка «Стоп» реально активна во
+  время ответа.
 
 ## Сообщения
 
@@ -56,7 +66,8 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
 | `status` | `idle` / `thinking` / `stopped` |
 | `replaceMessages` | заменить ленту целиком |
 
-На этом этапе ответ — эхо («Эхо: …»); реальный обмен через `DshBridge` — #008.
+На этом этапе ответ — эхо («Эхо: …» / «Echo: …» по локали) с паузой 150 мс;
+реальный обмен через `DshBridge` — #008.
 `ChatViewProvider.appendMessage()`/`postMessage()` — точка входа для #008/#013.
 
 ## Webview

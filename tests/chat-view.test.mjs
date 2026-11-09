@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   EXTENSION_MESSAGE_TYPES,
   WEBVIEW_MESSAGE_TYPES,
+  buildChatViewHtml,
   escapeHtml,
   extractViteAssets,
   parseWebviewMessage,
@@ -108,12 +109,63 @@ test('renderChatViewNoticeHtml: заглушка, если webview/dist не с�
     cspSource: 'https://cdn',
     title: 'DSH',
     message: 'WebView ещё не собран',
-    hint: 'pnpm build'
+    hint: 'pnpm build',
+    lang: 'en'
   });
 
+  assert.match(html, /<html lang="en">/);
   assert.match(html, /WebView ещё не собран/);
   assert.match(html, /pnpm build/);
   assert.match(html, /default-src 'none'/);
+});
+
+test('buildChatViewHtml: собирает оболочку из webview/dist с локалью', async () => {
+  const html = await buildChatViewHtml({
+    cspSource: 'https://cdn',
+    nonce: 'nonce-1',
+    locale: 'en',
+    readIndexHtml: async () => VITE_HTML,
+    toWebviewUri: (relative) => `https://cdn/${relative.replace(/^\.?\//, '')}`
+  });
+
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /script-src 'nonce-nonce-1'/);
+  assert.match(html, /src="https:\/\/cdn\/assets\/index\.js"/);
+  assert.match(html, /href="https:\/\/cdn\/assets\/index\.css"/);
+});
+
+test('buildChatViewHtml: нет index.html или скрипта — заглушка с локалью', async () => {
+  const missing = await buildChatViewHtml({
+    cspSource: 'https://cdn',
+    nonce: 'n',
+    locale: 'en',
+    readIndexHtml: async () => null,
+    toWebviewUri: (relative) => relative
+  });
+  assert.match(missing, /<html lang="en">/);
+  assert.match(missing, /WebView ещё не собран/);
+  assert.doesNotMatch(missing, /<script/);
+
+  const broken = await buildChatViewHtml({
+    cspSource: 'https://cdn',
+    nonce: 'n',
+    locale: 'ru',
+    readIndexHtml: async () => '<html><body>без скрипта</body></html>',
+    toWebviewUri: (relative) => relative
+  });
+  assert.match(broken, /<html lang="ru">/);
+  assert.match(broken, /WebView ещё не собран/);
+
+  const throwing = await buildChatViewHtml({
+    cspSource: 'https://cdn',
+    nonce: 'n',
+    locale: 'ru',
+    readIndexHtml: async () => {
+      throw new Error('нет доступа');
+    },
+    toWebviewUri: (relative) => relative
+  });
+  assert.match(throwing, /WebView ещё не собран/);
 });
 
 test('контракт сообщений extension и webview совпадает', () => {
