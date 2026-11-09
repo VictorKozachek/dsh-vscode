@@ -10,7 +10,8 @@ import {
   normalizePathForKey,
   normalizeRemoteName,
   parseGitConfigRemoteUrl,
-  resolveWorkspace
+  resolveWorkspace,
+  workspaceId
 } from '../extension/src/workspace/resolver.ts';
 
 // macOS отдаёт /var как симлинк на /private/var — канонизируем сразу,
@@ -144,19 +145,34 @@ test('resolveWorkspace: смена регистра пути не меняет i
   assert.equal(a.id, b.id);
 });
 
-test('resolveWorkspace: id переживает переезд папки, если gitRemote тот же', async () => {
-  const firstRepo = await makeCase('move-a');
-  const secondRepo = await makeCase('move-b');
-  await writeGitConfig(firstRepo, { url: 'git@github.com:acme/api-service.git' });
-  await writeGitConfig(secondRepo, { url: 'https://github.com/acme/api-service.git' });
+test('resolveWorkspace: разные папки одного репозитория дают разные id', async () => {
+  const repo = await makeCase('repo-multi');
+  await writeGitConfig(repo, { url: 'git@github.com:acme/api-service.git' });
+  const frontend = path.join(repo, 'frontend');
+  const backend = path.join(repo, 'backend');
+  await mkdir(frontend, { recursive: true });
+  await mkdir(backend, { recursive: true });
 
-  const before = await resolveWorkspace([folder(firstRepo)]);
-  const after = await resolveWorkspace([folder(secondRepo)]);
+  const front = await resolveWorkspace([folder(frontend, 'frontend')]);
+  const back = await resolveWorkspace([folder(backend, 'backend')]);
 
-  assert.ok(before && after);
-  assert.notEqual(before.path, after.path);
-  assert.equal(before.gitRemote, after.gitRemote);
-  assert.equal(before.id, after.id);
+  assert.ok(front && back);
+  assert.equal(front.gitRemote, back.gitRemote, 'gitRemote у папок общий');
+  assert.notEqual(front.id, back.id, 'путь входит в ключ: папки — разные воркспейсы');
+});
+
+test('workspaceId: путь входит в ключ всегда, gitRemote — дополнительный признак', () => {
+  const frontend = workspaceId('local', '/repo/frontend', 'github.com/acme/api-service');
+  const backend = workspaceId('local', '/repo/backend', 'github.com/acme/api-service');
+
+  assert.notEqual(frontend, backend, 'две папки одного репозитория не сливаются');
+  assert.equal(
+    frontend,
+    workspaceId('local', '/repo/frontend', 'github.com/acme/api-service'),
+    'тот же путь стабилен'
+  );
+  assert.equal(frontend.length, 16);
+  assert.match(frontend, /^[0-9a-f]{16}$/);
 });
 
 test('resolveWorkspace: git worktree читает общий конфиг', async () => {

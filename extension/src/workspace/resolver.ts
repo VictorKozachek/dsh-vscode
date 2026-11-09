@@ -79,9 +79,9 @@ export interface ResolvedWorkspace {
  *
  * Возвращает `null`, если ни одна папка не открыта.
  *
- * `id` зависит от remote и `gitRemote`; путь входит в ключ только тогда, когда
- * git-remote нет. Поэтому один и тот же проект, склонированный в другое место
- * (или перемещённый), сохраняет `id`, пока совпадает `gitRemote`.
+ * `id` — хеш от remote, канонического пути и `gitRemote`; путь входит в ключ
+ * всегда (§4.1): две папки одного репозитория — разные воркспейсы, переезд папки
+ * создаёт новую запись реестра.
  */
 export async function resolveWorkspace(
   folders: readonly WorkspaceFolderInput[],
@@ -122,15 +122,21 @@ export async function resolveWorkspace(
   };
 }
 
-/** Идентификатор воркспейса: `sha256(remote|gitRemote)` или `sha256(remote|path)`. */
+/**
+ * Идентификатор воркспейса: `sha256(remote | канонический путь | gitRemote)[:16]`.
+ *
+ * Путь входит в ключ всегда — так две папки одного репозитория (`repo/frontend`
+ * и `repo/backend`) остаются разными воркспейсами. `gitRemote` — дополнительный
+ * признак проекта (для UI и реестра), а не замена пути.
+ */
 export function workspaceId(
   remote: string,
   canonicalPath: string,
   gitRemote: string | null,
   platform: NodeJS.Platform = process.platform
 ): string {
-  const location = gitRemote ?? normalizePathForKey(canonicalPath, platform);
-  return createHash('sha256').update(`${remote}|${location}`).digest('hex').slice(0, 16);
+  const key = [remote, normalizePathForKey(canonicalPath, platform), gitRemote ?? ''].join('|');
+  return createHash('sha256').update(key).digest('hex').slice(0, 16);
 }
 
 /**
@@ -218,9 +224,6 @@ export function normalizeGitRemote(url: string): string | null {
   }
 
   const normalizedHost = host.toLowerCase();
-  if (normalizedHost === 'file') {
-    return null;
-  }
   const normalizedPath = repoPath
     .replace(/^\/+/, '')
     .replace(/\/+$/, '')
