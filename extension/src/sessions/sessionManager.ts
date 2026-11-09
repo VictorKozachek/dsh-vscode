@@ -185,19 +185,44 @@ export class SessionManager {
 
       const lastSessionId = await this.#readLastSessionId();
       if (lastSessionId !== null) {
+        let resumeError: unknown;
         try {
           const resumed = await this.#bridge.request('session.resume', { sessionId: lastSessionId });
           this.#applySession(resumed.session.id, resumed.session.title ?? null);
+        } catch (error) {
+          resumeError = error;
+        }
+
+        if (resumeError === undefined) {
           this.#status = 'active';
           await this.#persistSession();
           this.#touch();
           this.#log(`SessionManager: сессия ${lastSessionId} восстановлена`);
           return this.state;
-        } catch (error) {
-          this.#log(
-            `SessionManager: сессию ${lastSessionId} не удалось возобновить (${describeError(error)}), создаю новую`
+        }
+
+        // Ошибка resume может быть временной (таймаут, обрыв): создавать новую
+        // сессию можно только если DSH её действительно не знает.
+        const exists = await this.#sessionExistsOnServer(lastSessionId);
+        if (exists === true) {
+          this.#status = 'idle';
+          this.#touch();
+          throw new SessionManagerError(
+            `не удалось возобновить сессию ${lastSessionId}: ${describeError(resumeError)}`,
+            { cause: resumeError }
           );
         }
+        if (exists === null) {
+          this.#status = 'offline';
+          this.#touch();
+          throw new SessionManagerError(
+            `мост DSH недоступен при проверке сессии ${lastSessionId}: ${describeError(resumeError)}`,
+            { cause: resumeError }
+          );
+        }
+        this.#log(
+          `SessionManager: сессия ${lastSessionId} не найдена на стороне DSH (${describeError(resumeError)}), создаю новую`
+        );
       }
 
       return this.#createLocked();
@@ -268,7 +293,12 @@ export class SessionManager {
         try {
           await this.#bridge.request('turn.cancel', { sessionId, turnId });
         } catch (error) {
+          // Ход на DSH может продолжаться: не врём UI статусом paused.
           this.#log(`SessionManager: turn.cancel не удался: ${describeError(error)}`);
+          throw new SessionManagerError(
+            `не удалось остановить ход ${turnId}: ${describeError(error)}`,
+            { cause: error }
+          );
         }
       }
       this.#turnId = null;
@@ -327,17 +357,12 @@ export class SessionManager {
   // --- внутреннее ----------------------------------------------------------
 
   async #createLocked(options: { title?: string } = {}): Promise<SessionSnapshot> {
+    let created: { sessionId: string };
     try {
-      const created = await this.#bridge.request('session.create', {
+      created = await this.#bridge.request('session.create', {
         workspaceId: this.#workspaceId,
         ...(options.title === undefined ? {} : { title: options.title })
       });
-      this.#applySession(created.sessionId, options.title ?? null);
-      this.#status = 'active';
-      await this.#persistSession();
-      this.#touch();
-      this.#log(`SessionManager: создана сессия ${created.sessionId}`);
-      return this.state;
     } catch (error) {
       this.#status = 'offline';
       this.#touch();
@@ -345,6 +370,14 @@ export class SessionManager {
         cause: error
       });
     }
+
+    this.#applySession(created.sessionId, options.title ?? null);
+    this.#status = 'active';
+    // Ошибка записи в реестр не делает созданную сессию недействительной.
+    await this.#persistSession();
+    this.#touch();
+    this.#log(`SessionManager: создана сессия ${created.sessionId}`);
+    return this.state;
   }
 
   async #ensureBridge(): Promise<void> {
@@ -382,11 +415,39 @@ export class SessionManager {
   }
 
   async #persistSession(): Promise<void> {
+    // Время открытия — момент записи, а не конструктора/предыдущего события:
+    // по нему реестр #003 сортирует записи и делает GC.
+    const updatedAt = this.#clock().toISOString();
+    this.#updatedAt = updatedAt;
+
     if (this.#persistence !== undefined) {
-      await this.#persistence.writeLastSession(this.#workspaceId, this.#sessionId, this.#updatedAt);
+      try {
+        await this.#persistence.writeLastSession(this.#workspaceId, this.#sessionId, updatedAt);
+      } catch (error) {
+        this.#log(
+          `SessionManager: не удалось сохранить сессию ${String(this.#sessionId)} в реестре: ${describeError(error)}`
+        );
+      }
     }
     if (this.#storage !== undefined) {
-      await this.#storage.update(`${LAST_SESSION_KEY_PREFIX}${this.#workspaceId}`, this.#sessionId);
+      try {
+        await this.#storage.update(`${LAST_SESSION_KEY_PREFIX}${this.#workspaceId}`, this.#sessionId);
+      } catch (error) {
+        this.#log(`SessionManager: не удалось сохранить сессию в workspaceState: ${describeError(error)}`);
+      }
+    }
+  }
+
+  /** Знает ли DSH сессию: `null` — проверить не удалось (мост недоступен). */
+  async #sessionExistsOnServer(sessionId: string): Promise<boolean | null> {
+    try {
+      const result = await this.#bridge.request('session.list', {
+        workspaceId: this.#workspaceId
+      });
+      return result.sessions.some((session) => session.id === sessionId);
+    } catch (error) {
+      this.#log(`SessionManager: session.list для проверки ${sessionId} не удался: ${describeError(error)}`);
+      return null;
     }
   }
 

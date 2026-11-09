@@ -87,14 +87,14 @@ function createPersistence(lastSessionId = null) {
 
 const SESSION = { id: 'sess_resumed', workspaceId: 'ws_1', title: 'Старая сессия', updatedAt: '2026-11-09T10:00:00.000Z' };
 
-function createManager({ bridge, storage, persistence, logger = () => undefined } = {}) {
+function createManager({ bridge, storage, persistence, logger = () => undefined, clock } = {}) {
   const manager = new SessionManager({
     workspaceId: 'ws_1',
     bridge,
     storage,
     persistence,
     logger,
-    clock: () => new Date('2026-11-09T12:00:00.000Z')
+    clock: clock ?? (() => new Date('2026-11-09T12:00:00.000Z'))
   });
   return manager;
 }
@@ -142,6 +142,7 @@ test('restore: сессия исчезла на стороне DSH — созд�
     'session.resume': () => {
       throw new Error('session not found');
     },
+    'session.list': () => ({ sessions: [] }),
     'session.create': () => ({ sessionId: 'sess_new', createdAt: '2026-11-09T12:00:00.000Z' })
   });
   const persistence = createPersistence('sess_gone');
@@ -361,4 +362,135 @@ test('адаптер реестра: читает и пишет lastSessionId ч
     lastSessionId: 'sess_new',
     lastOpenedAt: '2026-11-09T12:00:00.000Z'
   });
+});
+
+test('restore: синхронная ошибка записи в реестр не создаёт вторую сессию', async () => {
+  const logs = [];
+  const bridge = createBridge({
+    'session.resume': () => ({ session: SESSION })
+  });
+  const persistence = {
+    async readLastSession() {
+      return 'sess_resumed';
+    },
+    async writeLastSession() {
+      throw new Error('registry EACCES');
+    }
+  };
+  const manager = createManager({ bridge, persistence, logger: (line) => logs.push(line) });
+
+  const snapshot = await manager.restore();
+
+  assert.equal(snapshot.sessionId, 'sess_resumed');
+  assert.equal(snapshot.status, 'active');
+  assert.equal(bridge.count('session.resume'), 1);
+  assert.equal(bridge.count('session.create'), 0, 'persist-ошибка не должна создавать дубль');
+  assert.ok(logs.some((line) => line.includes('не удалось сохранить сессию')));
+  manager.dispose();
+});
+
+test('create: ошибка записи в реестр не переводит менеджер в offline', async () => {
+  const logs = [];
+  const bridge = createBridge({
+    'session.create': () => ({ sessionId: 'sess_1', createdAt: '2026-11-09T12:00:00.000Z' })
+  });
+  const persistence = {
+    async readLastSession() {
+      return null;
+    },
+    async writeLastSession() {
+      throw new Error('EACCES');
+    }
+  };
+  const manager = createManager({ bridge, persistence, logger: (line) => logs.push(line) });
+
+  const snapshot = await manager.create();
+
+  assert.equal(snapshot.status, 'active');
+  assert.equal(snapshot.sessionId, 'sess_1');
+  assert.ok(logs.some((line) => line.includes('не удалось сохранить сессию')));
+  manager.dispose();
+});
+
+test('restore: временная ошибка resume не создаёт новую сессию', async () => {
+  const bridge = createBridge({
+    'session.resume': () => {
+      throw new Error('timeout');
+    },
+    'session.list': () => ({ sessions: [SESSION] })
+  });
+  const persistence = createPersistence('sess_resumed');
+  const manager = createManager({ bridge, persistence });
+
+  await assert.rejects(
+    () => manager.restore(),
+    (error) => {
+      assert.ok(error instanceof SessionManagerError);
+      assert.match(error.message, /не удалось возобновить сессию sess_resumed/);
+      return true;
+    }
+  );
+  assert.equal(bridge.count('session.create'), 0, 'transient-ошибка не должна создавать дубль');
+  assert.equal(manager.state.status, 'idle');
+  manager.dispose();
+});
+
+test('restore: если session.list недоступен, новая сессия не создаётся', async () => {
+  const bridge = createBridge({
+    'session.resume': () => {
+      throw new Error('timeout');
+    },
+    'session.list': () => {
+      throw new Error('bridge down');
+    }
+  });
+  const manager = createManager({ bridge, persistence: createPersistence('sess_resumed') });
+
+  await assert.rejects(() => manager.restore(), /мост DSH недоступен/);
+  assert.equal(bridge.count('session.create'), 0);
+  assert.equal(manager.state.status, 'offline');
+  manager.dispose();
+});
+
+test('persist получает текущее время открытия, а не время конструктора', async () => {
+  let tick = 0;
+  const clock = () => new Date(Date.UTC(2026, 10, 9, 12, 0, tick++));
+  const bridge = createBridge({
+    'session.create': () => ({ sessionId: 'sess_1', createdAt: '2026-11-09T12:00:00.000Z' })
+  });
+  const persistence = createPersistence(null);
+  const manager = createManager({ bridge, persistence, clock });
+
+  await manager.create();
+
+  assert.equal(persistence.writes.length, 1);
+  assert.notEqual(
+    persistence.writes[0]?.updatedAt,
+    '2026-11-09T12:00:00.000Z',
+    'в реестр уходит время записи, а не конструктора'
+  );
+  assert.equal(persistence.writes[0]?.updatedAt, '2026-11-09T12:00:01.000Z');
+  manager.dispose();
+});
+
+test('stop: отказ turn.cancel не притворяется остановленным ходом', async () => {
+  const bridge = createBridge({
+    'session.create': () => ({ sessionId: 'sess_1', createdAt: '2026-11-09T12:00:00.000Z' }),
+    'turn.start': () => ({ turnId: 'turn_1', sessionId: 'sess_1' }),
+    'turn.cancel': () => {
+      throw new Error('cancel failed');
+    }
+  });
+  const manager = createManager({ bridge, persistence: createPersistence(null) });
+  await manager.create();
+  await manager.startTurn('вопрос');
+
+  await assert.rejects(() => manager.stop(), (error) => {
+    assert.ok(error instanceof SessionManagerError);
+    assert.match(error.message, /не удалось остановить ход turn_1/);
+    return true;
+  });
+  assert.equal(manager.state.status, 'active', 'статус остаётся активным');
+  assert.equal(manager.state.turnId, 'turn_1');
+  manager.dispose();
 });
