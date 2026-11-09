@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test, { after } from 'node:test';
@@ -491,6 +491,115 @@ test('кэш: изменение AGENTS.md, не попавшего в инде�
 
   assert.equal(loader.lastCacheHit, false);
   assert.match(second.rules.find((rule) => rule.path === 'nested/AGENTS.md')?.text ?? '', /версия 2/);
+
+  loader.dispose();
+});
+
+test('manifest rules/skills: секреты и служебные пути не читаются', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({
+      rules: ['.env', '.git/config'],
+      context: { maxBytes: 100000 }
+    }),
+    '.env': 'SECRET_TOKEN=leak\n',
+    '.git/config': '[remote "origin"]\n',
+    'AGENTS.md': '# Корень\n',
+    'src/app.ts': 'export {};\n'
+  });
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+  const paths = pack.rules.map((rule) => rule.path);
+
+  assert.ok(!paths.includes('.env'), '.env не должен попадать в правила');
+  assert.ok(!paths.some((rulePath) => rulePath.includes('.git/')));
+  assert.ok(
+    pack.manifestWarnings.some((warning) => warning.includes('.env') && warning.includes('секретный')),
+    'про .env есть предупреждение'
+  );
+  assert.ok(
+    pack.manifestWarnings.some((warning) => warning.includes('.git/config') && warning.includes('секретный')),
+    'про .git/config есть предупреждение'
+  );
+
+  loader.dispose();
+});
+
+test('manifest rules/skills: симлинк за пределы воркспейса не читается', async () => {
+  const outside = path.join(tmpRoot, 'symlink-outside');
+  await mkdir(outside, { recursive: true });
+  await writeFile(path.join(outside, 'leak.md'), '# outside secret rule\n');
+  await mkdir(path.join(outside, 'skills', 'evil'), { recursive: true });
+  await writeFile(
+    path.join(outside, 'skills', 'evil', 'SKILL.md'),
+    '---\nname: evil\ndescription: Внешний скил\n---\n'
+  );
+
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({
+      rules: ['link-out/leak.md'],
+      skills: ['link-skills'],
+      context: { maxBytes: 100000 }
+    }),
+    'AGENTS.md': '# Корень\n',
+    'src/app.ts': 'export {};\n'
+  });
+  await symlink(outside, path.join(root, 'link-out'), 'dir');
+  await symlink(path.join(outside, 'skills'), path.join(root, 'link-skills'), 'dir');
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+
+  assert.ok(!pack.rules.some((rule) => rule.text.includes('outside secret rule')));
+  assert.ok(!pack.skills.some((skill) => skill.name === 'evil'), 'внешний скил не читается');
+  assert.ok(
+    pack.manifestWarnings.some((warning) => warning.includes('link-out/leak.md') && warning.includes('symlink')),
+    'предупреждение про symlink-правило'
+  );
+  assert.ok(
+    pack.manifestWarnings.some((warning) => warning.includes('link-skills') && warning.includes('symlink')),
+    'предупреждение про symlink-скилы'
+  );
+
+  loader.dispose();
+});
+
+test('manifest rules: ./AGENTS.md не дублируется с найденным обходом', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ rules: ['./AGENTS.md'] }),
+    'AGENTS.md': '# Единственные правила\n',
+    'src/app.ts': 'export {};\n'
+  });
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+
+  assert.equal(
+    pack.rules.filter((rule) => rule.path === 'AGENTS.md').length,
+    1,
+    'правило не должно дублироваться'
+  );
+
+  loader.dispose();
+});
+
+test('truncateToBytes: граница многобайтного символа не выходит за maxBytes', async () => {
+  const { root, home } = await makeCase({
+    '.dsh/workspace.json': JSON.stringify({ context: { maxBytes: 101 } }),
+    'AGENTS.md': `a${'€'.repeat(100)}`
+  });
+
+  const loader = makeLoader(root, home);
+  const pack = await loader.load();
+  const rule = pack.rules[0];
+
+  assert.ok(rule);
+  assert.equal(rule.truncated, true);
+  assert.ok(
+    Buffer.byteLength(rule.text) <= 101,
+    `текст занимает ${String(Buffer.byteLength(rule.text))} байт при лимите 101`
+  );
+  assert.ok(!rule.text.includes('\uFFFD'), 'разрезанного символа нет');
 
   loader.dispose();
 });
