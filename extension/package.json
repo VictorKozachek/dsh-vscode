@@ -17,6 +17,25 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dsh",
+          "title": "DSH",
+          "icon": "media/dsh.svg"
+        }
+      ]
+    },
+    "views": {
+      "dsh": [
+        {
+          "id": "dsh.chat",
+          "name": "Chat",
+          "type": "webview",
+          "contextualTitle": "DSH"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "dsh.newSession",
