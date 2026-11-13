@@ -28,14 +28,44 @@ export interface ChatPanelStateDto {
   readonly locale: 'ru' | 'en';
 }
 
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessageDto }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCallDto }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResultDto };
+
+/** Состояние привязки чата к сессии (#024). */
+export interface ChatSessionDto {
+  readonly sessionId: string | null;
+  readonly title: string | null;
+  readonly model: string;
+  readonly preset: string;
+  readonly status: string;
+  /**
+   * Состояние истории: `replayed` — восстановлена из транскрипта,
+   * `empty` — сессия новая/пустая, `unavailable` — транскрипт недоступен.
+   */
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
+}
+
 /** Сообщения WebView → extension. */
 export type WebviewMessage =
   | { readonly kind: 'ready' }
   | { readonly kind: 'stop' }
-  | { readonly kind: 'sendMessage'; readonly text: string };
+  | { readonly kind: 'sendMessage'; readonly text: string }
+  | { readonly kind: 'draftChanged'; readonly text: string }
+  | { readonly kind: 'openNewSession' }
+  | { readonly kind: 'retryChat' };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
-export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
+export const WEBVIEW_MESSAGE_TYPES = [
+  'ready',
+  'sendMessage',
+  'stop',
+  'draftChanged',
+  'openNewSession',
+  'retryChat'
+] as const;
 
 /** Статус потока ответа в панели. */
 export type ChatStreamStatus = 'idle' | 'streaming' | 'cancelled' | 'error';
@@ -66,7 +96,10 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolCall',
   'chatToolResult',
   'chatDone',
-  'chatCancelled'
+  'chatCancelled',
+  'chatSession',
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Сообщения extension → WebView. */
@@ -80,7 +113,10 @@ export type ExtensionMessage =
   | { readonly type: 'chatToolCall'; readonly call: ChatToolCallDto }
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResultDto }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
-  | { readonly type: 'chatCancelled' };
+  | { readonly type: 'chatCancelled' }
+  | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
@@ -102,6 +138,16 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   if (type === 'sendMessage') {
     const text = typeof record['text'] === 'string' ? record['text'].trim() : '';
     return text === '' ? null : { kind: 'sendMessage', text };
+  }
+  if (type === 'draftChanged') {
+    const text = typeof record['text'] === 'string' ? record['text'] : '';
+    return { kind: 'draftChanged', text };
+  }
+  if (type === 'openNewSession') {
+    return { kind: 'openNewSession' };
+  }
+  if (type === 'retryChat') {
+    return { kind: 'retryChat' };
   }
   return null;
 }
@@ -292,6 +338,14 @@ export class ChatSession {
     state: () => Omit<ChatPanelStateDto, 'status'>,
     emit: (message: ExtensionMessage) => void = () => undefined
   ): ExtensionMessage[] {
+    // Привязку к сессии обслуживает ChatController (#024), каркас не трогает.
+    if (
+      message.kind === 'draftChanged' ||
+      message.kind === 'openNewSession' ||
+      message.kind === 'retryChat'
+    ) {
+      return [];
+    }
     if (message.kind === 'ready') {
       const outgoing: ExtensionMessage[] = [
         { type: 'state', state: { ...state(), status: this.#status } }

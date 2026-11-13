@@ -6,8 +6,31 @@
  * `tests/chat-view.test.mjs`.
  */
 
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessage }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCall }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResult };
+
+/** Состояние привязки чата к сессии (#024). */
+export interface ChatSessionDto {
+  readonly sessionId: string | null;
+  readonly title: string | null;
+  readonly model: string;
+  readonly preset: string;
+  readonly status: string;
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
+}
+
 /** Сообщения WebView → extension host. */
-export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
+export const WEBVIEW_MESSAGE_TYPES = [
+  'ready',
+  'sendMessage',
+  'stop',
+  'draftChanged',
+  'openNewSession',
+  'retryChat'
+] as const;
 
 /** Сообщения extension host → WebView. */
 export const EXTENSION_MESSAGE_TYPES = [
@@ -20,7 +43,10 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolCall',
   'chatToolResult',
   'chatDone',
-  'chatCancelled'
+  'chatCancelled',
+  'chatSession',
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Статус потока ответа. */
@@ -67,7 +93,10 @@ export interface ChatPanelState {
 export type WebviewToExtension =
   | { readonly type: 'ready' }
   | { readonly type: 'sendMessage'; readonly text: string }
-  | { readonly type: 'stop' };
+  | { readonly type: 'stop' }
+  | { readonly type: 'draftChanged'; readonly text: string }
+  | { readonly type: 'openNewSession' }
+  | { readonly type: 'retryChat' };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =
@@ -80,4 +109,7 @@ export type ExtensionToWebview =
   | { readonly type: 'chatToolCall'; readonly call: ChatToolCall }
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResult }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
-  | { readonly type: 'chatCancelled' };
+  | { readonly type: 'chatCancelled' }
+  | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
