@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
+import { registerSessionsView } from './views/sessionsView';
 import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
@@ -118,6 +119,16 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
+
+  // Панель Sessions (#022): список сессий воркспейса поверх SessionManager.
+  context.subscriptions.push(
+    registerSessionsView(context, {
+      getManager: () => sessionManager,
+      log: (line) => {
+        log.appendLine(line);
+      }
+    })
+  );
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {

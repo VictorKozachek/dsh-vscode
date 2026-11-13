@@ -184,7 +184,14 @@ test('манифест: контейнер DSH в activity bar и view dsh.chat'
   assert.ok(await stat(path.join(repoRoot, 'extension', container.icon)), 'иконка контейнера существует');
 
   const views = manifest.contributes.views.dsh;
-  assert.equal(views.length, 1);
-  assert.equal(views[0].id, 'dsh.chat');
-  assert.equal(views[0].type, 'webview');
+  assert.deepEqual(
+    views.map((view) => view.id).sort(),
+    ['dsh.chat', 'dsh.sessions'],
+    'в контейнере DSH чат и список сессий (#022)'
+  );
+  const chat = views.find((view) => view.id === 'dsh.chat');
+  assert.equal(chat.type, 'webview');
+  const sessions = views.find((view) => view.id === 'dsh.sessions');
+  assert.equal(sessions.type, 'tree');
+  assert.equal(sessions.name, 'Sessions');
 });

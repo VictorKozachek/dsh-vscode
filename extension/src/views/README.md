@@ -119,3 +119,27 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
 Контракт сообщений расширен в `chatHtml.ts` (`chatStatus`, `chatToken`,
 `chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`); паритет с
 `webview/src/messages.ts` проверяет `tests/chat-view.test.mjs`.
+
+## Панель Sessions (#022)
+
+`contributes.views.dsh` содержит `dsh.sessions` (tree) рядом с чатом.
+
+- `sessionsModel.ts` — чистая модель: группы «Сегодня/Вчера/Ранее», бейджи
+  `active`/`idle`, подписи/подсказки, состояния `loading`/`empty`/`error`/
+  `ready`, fallback-опрос `SessionRefreshLoop` (5 с, только пока панель видима);
+- `sessionsController.ts` — связка с `SessionManager` (#007): refresh,
+  polling, клик по сессии (`resume`), `create`, `pause`, а также
+  необязательные `rename`/`remove`/`openTranscript` (пока рантайм их не
+  отдаёт — команда честно сообщает об этом);
+- `sessionsView.ts` — `TreeDataProvider`, команды `dsh.sessions.*`, контекстное
+  меню (`Resume`, `Stop`, `Rename`, `Delete` с подтверждением, `Open
+  Transcript`), кнопки `+`/`⟳`, `viewsWelcome` для пустого состояния.
+
+Данные идут только через `SessionManager` (никаких HTTP из view). Ошибка
+рантайма показывается строкой с «Повторить» и подсказкой про
+`dsh.executablePath`; панель не падает при остановленном рантайме (источник
+ленивый: менеджер появляется после активации воркспейса).
+
+Тесты: `tests/sessions-model.test.mjs` (5), `tests/sessions-controller.test.mjs`
+(8), рендер дерева/команды — в `tests/activation.test.mjs` и
+`tests/chat-view.test.mjs` (манифест).
