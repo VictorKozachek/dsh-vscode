@@ -18,6 +18,13 @@ export interface ChatDispatchSessionPort {
   ): ExtensionMessage[];
 }
 
+/** Порт привязки чата к сессии (#024). */
+export interface ChatSessionDispatchPort {
+  draftChanged(text: string): void;
+  openNewSession(): void;
+  retryChat(): void;
+}
+
 /** Зависимости диспетчера. */
 export interface ChatDispatchOptions {
   /** Потоковый чат (#008); без него — эхо-режим каркаса (#005). */
@@ -26,6 +33,8 @@ export interface ChatDispatchOptions {
   readonly state: () => Omit<ChatPanelStateDto, 'status'>;
   readonly post: (message: ExtensionMessage) => Promise<void> | void;
   readonly log?: ((line: string) => void) | undefined;
+  /** Привязка чата к сессии (#024). */
+  readonly chatSession?: ChatSessionDispatchPort | undefined;
 }
 
 /**
@@ -45,6 +54,19 @@ export async function dispatchWebviewMessage(
   const emit = (outgoing: ExtensionMessage): void => {
     void post(outgoing);
   };
+
+  if (message.kind === 'draftChanged') {
+    options.chatSession?.draftChanged(message.text);
+    return;
+  }
+  if (message.kind === 'openNewSession') {
+    options.chatSession?.openNewSession();
+    return;
+  }
+  if (message.kind === 'retryChat') {
+    options.chatSession?.retryChat();
+    return;
+  }
 
   const chat = options.chat;
   if (chat !== undefined) {
@@ -68,6 +90,8 @@ export async function dispatchWebviewMessage(
           await post(outgoing);
         }
         await post({ type: 'chatStatus', status: chat.status });
+        // WebView готов: отдаём начальную привязку к сессии (#024).
+        chat.syncNow?.();
         return;
       }
     }
