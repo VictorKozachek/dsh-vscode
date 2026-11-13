@@ -60,6 +60,8 @@ export interface FilePreview {
   readonly newContent: string;
   readonly originalHash: string;
   readonly newHash: string;
+  /** Файл существовал до правки (учитывается в проверке конфликта). */
+  readonly existed: boolean;
   readonly created: boolean;
   /** Минимальный набор строчных правок (для WorkspaceEdit). */
   readonly textEdits: readonly TextEditSpec[];
@@ -82,7 +84,8 @@ export type ApplyResult =
 export type RevertResult =
   | { readonly status: 'reverted'; readonly files: readonly string[] }
   | { readonly status: 'empty' }
-  | { readonly status: 'conflict'; readonly path: string };
+  | { readonly status: 'conflict'; readonly path: string }
+  | { readonly status: 'failed'; readonly path: string; readonly error: string };
 
 /** Порт файловой системы. */
 export interface DiffFileSystem {
@@ -171,27 +174,42 @@ export class DiffService {
       throw new DiffServiceError('empty-edit', 'нет правок для предпросмотра');
     }
 
-    const files: FilePreview[] = [];
+    // Один файл — одна запись: дубли путей объединяются, операции идут по порядку.
+    const merged = new Map<string, { relativePath: string; operations: EditOperation[] }>();
     for (const edit of edits) {
       const absolutePath = await this.#resolveInsideRoot(edit.path);
-      const relativePath = toPosix(path.relative(this.#root, absolutePath));
-      const original = (await this.#fs.readFile(absolutePath)) ?? '';
-      const created = original === '' && (await this.#fileMissing(absolutePath));
+      const entry = merged.get(absolutePath);
+      if (entry === undefined) {
+        merged.set(absolutePath, {
+          relativePath: toPosix(path.relative(this.#root, absolutePath)),
+          operations: [...edit.operations]
+        });
+      } else {
+        entry.operations.push(...edit.operations);
+      }
+    }
 
-      let content = original;
-      for (const operation of edit.operations) {
+    const files: FilePreview[] = [];
+    for (const [absolutePath, entry] of merged) {
+      const original = await this.#fs.readFile(absolutePath);
+      const existed = original !== null;
+      const baseContent = original ?? '';
+
+      let content = baseContent;
+      for (const operation of entry.operations) {
         content = applyOperation(content, operation);
       }
 
       files.push({
         path: absolutePath,
-        relativePath,
-        originalContent: original,
+        relativePath: entry.relativePath,
+        originalContent: baseContent,
         newContent: content,
-        originalHash: hashContent(original),
+        originalHash: hashContent(baseContent),
         newHash: hashContent(content),
-        created,
-        textEdits: computeLineEdits(original, content)
+        existed,
+        created: !existed,
+        textEdits: computeLineEdits(baseContent, content)
       });
     }
 
@@ -217,8 +235,15 @@ export class DiffService {
     }
 
     for (const file of preview.files) {
-      const current = (await this.#fs.readFile(file.path)) ?? '';
-      if (hashContent(current) !== file.originalHash) {
+      const current = await this.#fs.readFile(file.path);
+      if (file.created) {
+        // Новый файл не должен появиться между preview и apply.
+        if (current !== null) {
+          return { status: 'conflict', path: file.relativePath };
+        }
+        continue;
+      }
+      if (current === null || hashContent(current) !== file.originalHash) {
         return { status: 'conflict', path: file.relativePath };
       }
     }
@@ -231,9 +256,14 @@ export class DiffService {
       } catch (error) {
         for (const item of [...written].reverse()) {
           try {
-            await this.#fs.writeFile(item.file.path, item.originalContent);
+            if (item.file.created && this.#fs.removeFile !== undefined) {
+              // Созданный файл при откате удаляется, а не остаётся пустым.
+              await this.#fs.removeFile(item.file.path);
+            } else {
+              await this.#fs.writeFile(item.file.path, item.originalContent);
+            }
           } catch {
-            // откат best-effort: исходное содержимое всё равно потеряно бы не было
+            // откат best-effort: уже записанные файлы возвращаем, насколько можно
           }
         }
         return {
@@ -262,9 +292,29 @@ export class DiffService {
    */
   async verify(preview: Preview): Promise<{ readonly status: 'ok' } | { readonly status: 'conflict'; readonly path: string }> {
     for (const file of preview.files) {
-      const current = (await this.#fs.readFile(file.path)) ?? '';
-      if (hashContent(current) !== file.originalHash) {
+      const current = await this.#fs.readFile(file.path);
+      if (file.created) {
+        // Новый файл не должен появиться между preview и apply.
+        if (current !== null) {
+          return { status: 'conflict', path: file.relativePath };
+        }
+        continue;
+      }
+      if (current === null || hashContent(current) !== file.originalHash) {
         return { status: 'conflict', path: file.relativePath };
+      }
+    }
+    return { status: 'ok' };
+  }
+
+  /** Совпадает ли реальное содержимое с предпросмотром (после WorkspaceEdit). */
+  async checkApplied(
+    preview: Preview
+  ): Promise<{ readonly status: 'ok' } | { readonly status: 'mismatch'; readonly path: string }> {
+    for (const file of preview.files) {
+      const current = await this.#fs.readFile(file.path);
+      if (current === null || current !== file.newContent) {
+        return { status: 'mismatch', path: file.relativePath };
       }
     }
     return { status: 'ok' };
@@ -294,22 +344,41 @@ export class DiffService {
     }
 
     for (const file of transaction.files) {
-      const current = (await this.#fs.readFile(file.absolutePath)) ?? '';
-      if (hashContent(current) !== hashContent(file.appliedContent)) {
+      const current = await this.#fs.readFile(file.absolutePath);
+      if (current === null || hashContent(current) !== hashContent(file.appliedContent)) {
         return { status: 'conflict', path: toPosix(path.relative(this.#root, file.absolutePath)) };
       }
     }
 
+    const restored: { file: (typeof transaction.files)[number] }[] = [];
     for (const file of [...transaction.files].reverse()) {
-      if (file.created) {
-        if (this.#fs.removeFile !== undefined) {
-          await this.#fs.removeFile(file.absolutePath);
+      try {
+        if (file.created) {
+          if (this.#fs.removeFile !== undefined) {
+            await this.#fs.removeFile(file.absolutePath);
+          } else {
+            await this.#fs.writeFile(file.absolutePath, '');
+          }
         } else {
-          await this.#fs.writeFile(file.absolutePath, '');
+          await this.#fs.writeFile(file.absolutePath, file.originalContent);
         }
-        continue;
+        restored.push({ file });
+      } catch (error) {
+        // Транзакционный откат: уже восстановленные файлы возвращаем к
+        // применённому содержимому, транзакцию не забываем.
+        for (const item of restored) {
+          try {
+            await this.#fs.writeFile(item.file.absolutePath, item.file.appliedContent);
+          } catch {
+            // best-effort
+          }
+        }
+        return {
+          status: 'failed',
+          path: toPosix(path.relative(this.#root, file.absolutePath)),
+          error: error instanceof Error ? error.message : String(error)
+        };
       }
-      await this.#fs.writeFile(file.absolutePath, file.originalContent);
     }
 
     this.#lastApplied = undefined;
@@ -322,10 +391,6 @@ export class DiffService {
   }
 
   // --- внутреннее ----------------------------------------------------------
-
-  async #fileMissing(absolutePath: string): Promise<boolean> {
-    return (await this.#fs.readFile(absolutePath)) === null;
-  }
 
   /** Абсолютный путь внутри воркспейса (после realpath, если доступен). */
   async #resolveInsideRoot(inputPath: string): Promise<string> {
@@ -345,16 +410,36 @@ export class DiffService {
     }
 
     const realRoot = (await this.#fs.realpath(this.#root)) ?? this.#root;
-    const parent = path.dirname(absolute);
-    const realParent = (await this.#fs.realpath(parent)) ?? parent;
-    const target = (await this.#fs.realpath(absolute)) ?? path.join(realParent, path.basename(absolute));
-    if (!isInside(realRoot, target)) {
-      throw new DiffServiceError(
-        'outside-workspace',
-        `правка ведёт за пределы воркспейса (symlink): ${inputPath}`
-      );
+    // Для нового пути realpath даёт null: идём вверх до ближайшего
+    // существующего предка и приклеиваем остаток — иначе link/newdir/file
+    // выглядел бы «внутри» root.
+    let candidate = absolute;
+    const rest: string[] = [];
+    let realTarget: string | null = null;
+    for (let depth = 0; depth < 64; depth += 1) {
+      realTarget = await this.#fs.realpath(candidate);
+      if (realTarget !== null) {
+        const full = rest.length === 0 ? realTarget : path.join(realTarget, ...rest);
+        if (!isInside(realRoot, full)) {
+          throw new DiffServiceError(
+            'outside-workspace',
+            `правка ведёт за пределы воркспейса (symlink): ${inputPath}`
+          );
+        }
+        return full;
+      }
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        break;
+      }
+      rest.unshift(path.basename(candidate));
+      candidate = parent;
     }
-    return target;
+
+    throw new DiffServiceError(
+      'outside-workspace',
+      `не удалось проверить реальный путь (symlink): ${inputPath}`
+    );
   }
 }
 
