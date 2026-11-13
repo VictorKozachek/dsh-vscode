@@ -24,8 +24,8 @@ async function workspace(files = {}) {
   return root;
 }
 
-/** Фейковый редактор: пишет файл и держит undo-стек. */
-function createEditor({ corrupt = false } = {}) {
+/** Фейковый редактор: атомарная пачка, restore и undo-стек. */
+function createEditor({ corrupt = false, failOnWrite = 0 } = {}) {
   const shown = [];
   const errors = [];
   const infos = [];
@@ -40,18 +40,52 @@ function createEditor({ corrupt = false } = {}) {
     async showDiff(files) {
       shown.push(...files);
     },
-    async applyContent(file) {
-      applied.push(file);
-      let previous = null;
+    async applyBatch(files) {
+      applied.push(...files);
+      const entries = [];
       try {
-        previous = await readFile(file.path, 'utf8');
+        for (const [index, file] of files.entries()) {
+          if (failOnWrite === index + 1) {
+            throw new Error('write failed');
+          }
+          let previous = null;
+          try {
+            previous = await readFile(file.path, 'utf8');
+          } catch {
+            previous = null;
+          }
+          const content =
+            corrupt && index === files.length - 1 ? `${file.content}ПОВРЕЖДЕНО` : file.content;
+          await mkdir(path.dirname(file.path), { recursive: true });
+          await writeFile(file.path, content);
+          entries.push({ path: file.path, previous });
+        }
+        stack.push(...entries);
+        return true;
       } catch {
-        previous = null;
+        // Атомарность: при сбое Nothing из пачки не применено.
+        for (const entry of entries.reverse()) {
+          try {
+            if (entry.previous === null) {
+              await rm(entry.path, { force: true });
+            } else {
+              await writeFile(entry.path, entry.previous);
+            }
+          } catch {
+            // best-effort
+          }
+        }
+        return false;
       }
-      const content = corrupt ? `${file.content}ПОВРЕЖДЕНО` : file.content;
-      await mkdir(path.dirname(file.path), { recursive: true });
-      await writeFile(file.path, content);
-      stack.push({ path: file.path, previous });
+    },
+    async restore(files) {
+      for (const file of files) {
+        if (file.created) {
+          await rm(file.path, { force: true });
+        } else {
+          await writeFile(file.path, file.originalContent);
+        }
+      }
       return true;
     },
     clearPreviews() {},
@@ -184,4 +218,40 @@ test('устаревший preview id не применяется', async () => 
   ]);
   assert.equal(await controller.apply('preview-999'), 'stale');
   assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'a\n');
+});
+
+test('пачка атомарна: сбой второго файла не оставляет первый изменённым', async () => {
+  const root = await workspace({ 'a.txt': 'A\n', 'b.txt': 'B\n' });
+  const editor = createEditor({ failOnWrite: 2 });
+  const { controller, service } = makeController(root, editor);
+
+  await controller.preview([
+    { path: 'a.txt', operations: [{ kind: 'replaceFile', content: 'A2\n' }] },
+    { path: 'b.txt', operations: [{ kind: 'replaceFile', content: 'B2\n' }] }
+  ]);
+  const result = await controller.apply();
+
+  assert.equal(result, 'conflict');
+  assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'A\n');
+  assert.equal(await readFile(path.join(root, 'b.txt'), 'utf8'), 'B\n');
+  assert.equal(service.canRevert, false);
+  assert.equal(editor.applied.length, 2, 'пачка была передана целиком');
+});
+
+test('расхождение в пачке возвращает исходное содержимое всех файлов', async () => {
+  const root = await workspace({ 'a.txt': 'A\n', 'b.txt': 'B\n' });
+  const editor = createEditor({ corrupt: true });
+  const { controller, service } = makeController(root, editor);
+
+  await controller.preview([
+    { path: 'a.txt', operations: [{ kind: 'replaceFile', content: 'A2\n' }] },
+    { path: 'b.txt', operations: [{ kind: 'replaceFile', content: 'B2\n' }] }
+  ]);
+  const result = await controller.apply();
+
+  assert.equal(result, 'conflict');
+  assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'A\n');
+  assert.equal(await readFile(path.join(root, 'b.txt'), 'utf8'), 'B\n');
+  assert.equal(service.canRevert, false);
+  assert.ok(editor.errors.some((message) => message.includes('не совпало')));
 });

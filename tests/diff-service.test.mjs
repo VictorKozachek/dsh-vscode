@@ -7,7 +7,6 @@ import test, { after } from 'node:test';
 import {
   DiffService,
   DiffServiceError,
-  computeLineEdits,
   createNodeDiffFileSystem,
   hashContent
 } from '../extension/src/diff/diffService.ts';
@@ -72,9 +71,6 @@ test('точечные правки: replaceText и replaceLines', async () => {
   ]);
 
   assert.equal(preview.files[0].newContent, 'one\nTWO\nthree!\n');
-  assert.deepEqual(preview.files[0].textEdits, [
-    { startLine: 2, endLine: 3, replacement: 'TWO\nthree!' }
-  ]);
   await diff.apply();
   assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'one\nTWO\nthree!\n');
 });
@@ -209,17 +205,6 @@ test('новый файл создаётся и удаляется откато�
 
   await diff.revertLast();
   await assert.rejects(() => readFile(path.join(root, 'new/created.ts'), 'utf8'));
-});
-
-test('computeLineEdits: минимальная строчная замена и её отсутствие', () => {
-  assert.deepEqual(computeLineEdits('a\nb\nc\n', 'a\nB\nc\n'), [
-    { startLine: 2, endLine: 2, replacement: 'B' }
-  ]);
-  assert.deepEqual(computeLineEdits('a\n', 'a\nb\n'), [
-    { startLine: 2, endLine: 1, replacement: 'b' }
-  ]);
-  assert.deepEqual(computeLineEdits('a\nb\n', 'a\nb\n'), []);
-  assert.deepEqual(computeLineEdits('a\nb\n', ''), [{ startLine: 1, endLine: 2, replacement: '' }]);
 });
 
 test('hashContent стабилен и различает содержимое', () => {

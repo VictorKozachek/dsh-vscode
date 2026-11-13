@@ -56,28 +56,56 @@ export class VscodeDiffEditor implements DiffEditorPort {
     }
   }
 
-  async applyContent(file: {
-    readonly path: string;
-    readonly content: string;
-    readonly created: boolean;
-  }): Promise<boolean> {
-    const uri = vscode.Uri.file(file.path);
+  async applyBatch(
+    files: readonly {
+      readonly path: string;
+      readonly content: string;
+      readonly created: boolean;
+    }[]
+  ): Promise<boolean> {
+    // Один WorkspaceEdit на всю пачку — одна транзакция и один undo-шаг.
     const edit = new vscode.WorkspaceEdit();
-    if (file.created) {
-      edit.createFile(uri, { overwrite: false, contents: Buffer.from(file.content, 'utf8') });
-      return vscode.workspace.applyEdit(edit);
+    for (const file of files) {
+      await this.#addContentToEdit(edit, file.path, file.content, file.created);
     }
+    return vscode.workspace.applyEdit(edit);
+  }
 
+  async restore(
+    files: readonly {
+      readonly path: string;
+      readonly originalContent: string;
+      readonly created: boolean;
+    }[]
+  ): Promise<boolean> {
+    const edit = new vscode.WorkspaceEdit();
+    for (const file of files) {
+      const uri = vscode.Uri.file(file.path);
+      if (file.created) {
+        edit.deleteFile(uri, { ignoreIfNotExists: true });
+        continue;
+      }
+      await this.#addContentToEdit(edit, file.path, file.originalContent, false);
+    }
+    return vscode.workspace.applyEdit(edit);
+  }
+
+  async #addContentToEdit(
+    edit: vscode.WorkspaceEdit,
+    filePath: string,
+    content: string,
+    created: boolean
+  ): Promise<void> {
+    const uri = vscode.Uri.file(filePath);
+    if (created) {
+      edit.createFile(uri, { overwrite: true, contents: Buffer.from(content, 'utf8') });
+      return;
+    }
     const document = await vscode.workspace.openTextDocument(uri);
     // Полная замена содержимого: точный newContent (включая хвостовой
     // перевод строки и CRLF), undo редактора возвращает исходное.
     const lastLine = document.lineAt(Math.max(0, document.lineCount - 1));
-    edit.replace(
-      uri,
-      new vscode.Range(new vscode.Position(0, 0), lastLine.range.end),
-      file.content
-    );
-    return vscode.workspace.applyEdit(edit);
+    edit.replace(uri, new vscode.Range(new vscode.Position(0, 0), lastLine.range.end), content);
   }
 
   clearPreviews(): void {

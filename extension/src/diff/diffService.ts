@@ -45,13 +45,6 @@ export interface ProposedFileEdit {
   readonly operations: readonly EditOperation[];
 }
 
-/** Минимальная замена строк для `vscode.TextEdit` / диффа. */
-export interface TextEditSpec {
-  readonly startLine: number;
-  readonly endLine: number;
-  readonly replacement: string;
-}
-
 /** Предпросмотр одного файла. */
 export interface FilePreview {
   readonly path: string;
@@ -63,8 +56,6 @@ export interface FilePreview {
   /** Файл существовал до правки (учитывается в проверке конфликта). */
   readonly existed: boolean;
   readonly created: boolean;
-  /** Минимальный набор строчных правок (для WorkspaceEdit). */
-  readonly textEdits: readonly TextEditSpec[];
 }
 
 /** Предпросмотр пачки правок. */
@@ -208,8 +199,7 @@ export class DiffService {
         originalHash: hashContent(baseContent),
         newHash: hashContent(content),
         existed,
-        created: !existed,
-        textEdits: computeLineEdits(baseContent, content)
+        created: !existed
       });
     }
 
@@ -516,41 +506,6 @@ export function applyOperation(content: string, operation: EditOperation): strin
     default:
       throw new DiffServiceError('empty-edit', 'неизвестная операция');
   }
-}
-
-/**
- * Минимальная строчная правка между двумя текстами: общий префикс/суффикс
- * строк, середина — одна замена. Пусто, если тексты совпадают.
- */
-export function computeLineEdits(original: string, next: string): readonly TextEditSpec[] {
-  if (original === next) {
-    return [];
-  }
-  const originalLines = splitContentLines(original);
-  const nextLines = splitContentLines(next);
-
-  let prefix = 0;
-  while (
-    prefix < originalLines.length &&
-    prefix < nextLines.length &&
-    originalLines[prefix] === nextLines[prefix]
-  ) {
-    prefix += 1;
-  }
-
-  let suffix = 0;
-  while (
-    suffix < originalLines.length - prefix &&
-    suffix < nextLines.length - prefix &&
-    originalLines[originalLines.length - 1 - suffix] === nextLines[nextLines.length - 1 - suffix]
-  ) {
-    suffix += 1;
-  }
-
-  const startLine = prefix + 1;
-  const endLine = originalLines.length - suffix;
-  const replacement = nextLines.slice(prefix, nextLines.length - suffix).join('\n');
-  return [{ startLine, endLine, replacement }];
 }
 
 /** SHA-256 содержимого — база для проверки конфликтов. */
