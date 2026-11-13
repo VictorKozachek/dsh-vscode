@@ -63,8 +63,7 @@ export interface NewSessionForm {
 /** Пресет, который доступен всегда. */
 export const STANDARD_PRESET: PresetOption = {
   id: 'standard',
-  title: 'standard',
-  description: 'Базовый пресет DSH'
+  title: 'standard'
 };
 
 /** Предел длины заголовка. */
@@ -145,28 +144,28 @@ export function validateNewSession(
 ): NewSessionErrors {
   const errors: NewSessionErrors = {};
   if (values.preset.trim() === '') {
-    errors.preset = 'Выберите пресет';
+    errors.preset = 'newSession.error.presetRequired';
   } else if (!options.presets.some((preset) => preset.id === values.preset)) {
-    errors.preset = `Неизвестный пресет: ${values.preset}`;
+    errors.preset = 'newSession.error.presetUnknown';
   }
   if (values.model.trim() === '') {
-    errors.model = 'Выберите модель';
+    errors.model = 'newSession.error.modelRequired';
   } else if (
     options.models.length > 0 &&
     !options.models.includes(values.model.trim())
   ) {
-    errors.model = `Модель недоступна: ${values.model}`;
+    errors.model = 'newSession.error.modelUnknown';
   }
   if (!SANDBOX_OPTIONS.includes(values.sandbox)) {
-    errors.sandbox = 'Неизвестный sandbox-режим';
+    errors.sandbox = 'newSession.error.sandboxUnknown';
   } else if (values.sandbox === 'danger-full-access' && !values.confirmDanger) {
-    errors.sandbox = 'danger-full-access требует явного подтверждения';
+    errors.sandbox = 'newSession.error.dangerConfirm';
   }
   if (!APPROVAL_OPTIONS.includes(values.approval)) {
-    errors.approval = 'Неизвестная политика подтверждений';
+    errors.approval = 'newSession.error.approvalUnknown';
   }
   if (values.title.trim().length > MAX_TITLE_LENGTH) {
-    errors.title = `Заголовок длиннее ${String(MAX_TITLE_LENGTH)} символов`;
+    errors.title = 'newSession.error.titleTooLong';
   }
   return errors;
 }

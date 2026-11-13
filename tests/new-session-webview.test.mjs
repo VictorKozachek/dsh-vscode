@@ -31,11 +31,11 @@ const FORM = {
 test('initialValues и валидация формы', () => {
   assert.deepEqual(initialValues(FORM), FORM.values);
   assert.deepEqual(validateForm(FORM.values, FORM), {});
-  assert.equal(validateForm({ ...FORM.values, model: '' }, FORM).model, 'Выберите модель');
-  assert.equal(validateForm({ ...FORM.values, preset: 'nope' }, FORM).preset, 'Пресет недоступен');
+  assert.equal(validateForm({ ...FORM.values, model: '' }, FORM).model, 'newSession.error.modelRequired');
+  assert.equal(validateForm({ ...FORM.values, preset: 'nope' }, FORM).preset, 'newSession.error.presetUnknown');
   assert.match(
     validateForm({ ...FORM.values, sandbox: 'danger-full-access' }, FORM).sandbox,
-    /подтверждения/
+    /dangerConfirm/
   );
   assert.equal(
     validateForm({ ...FORM.values, sandbox: 'danger-full-access', confirmDanger: true }, FORM).sandbox,
@@ -47,8 +47,8 @@ test('поиск моделей и описание пресета', () => {
   assert.deepEqual(filterModels(FORM.models, 'V4'), ['deepseek-v4']);
   assert.deepEqual(filterModels(FORM.models, '  '), FORM.models);
   assert.equal(presetDescription(FORM, 'standard'), 'Базовый');
-  assert.match(presetDescription(FORM, 'unknown'), /Пресет рантайма/);
-  assert.match(DANGER_WARNING, /danger-full-access/);
+  assert.equal(presetDescription(FORM, 'unknown'), 'newSession.presetFallback');
+  assert.equal(DANGER_WARNING, 'newSession.dangerWarning');
 });
 
 test('клавиатура: Esc — отмена, Ctrl/Cmd+Enter — создание', () => {

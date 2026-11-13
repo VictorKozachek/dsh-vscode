@@ -172,7 +172,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       session: this.#session,
       state: () => this.#options.state(),
       post: (outgoing) => this.postMessage(outgoing),
-      log: (line) => this.#options.log?.(line)
+      log: (line) => this.#options.log?.(line),
+      newSession: this.#options.newSession
     });
   }
 

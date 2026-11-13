@@ -69,7 +69,7 @@ test('submit невалидной формы: ошибки, create не вызы
   await controller.submit({ ...validValues, model: '' });
   assert.equal(calls.create.length, 0);
   assert.equal(calls.update.length, 1);
-  assert.equal(calls.update[0].errors.model, 'Выберите модель');
+  assert.equal(calls.update[0].errors.model, 'newSession.error.modelRequired');
   assert.equal(calls.close, 0);
   assert.equal(controller.isOpen, true);
 });
@@ -111,7 +111,7 @@ test('danger-full-access без подтверждения не создаёт �
 
   await controller.submit({ ...validValues, sandbox: 'danger-full-access' });
   assert.equal(calls.create.length, 0);
-  assert.match(calls.update[0].errors.sandbox, /подтверждения/);
+  assert.match(calls.update[0].errors.sandbox, /dangerConfirm/);
 });
 
 test('cancel закрывает форму; запомненный несуществующий пресет → standard', async () => {
@@ -122,4 +122,122 @@ test('cancel закрывает форму; запомненный несуще�
   controller.cancel();
   assert.equal(calls.close, 1);
   assert.equal(controller.isOpen, false);
+});
+
+test('ошибка загрузки пресетов/моделей показывается в форме', async () => {
+  const calls = { open: [], update: [], close: 0, create: [] };
+  const controller = new NewSessionController({
+    getPresets: async () => {
+      throw new Error('runtime offline');
+    },
+    getModels: async () => [],
+    create: async (options) => {
+      calls.create.push(options);
+      return { sessionId: 'sess-1' };
+    },
+    getSettings: () => ({ defaultModel: 'deepseek-chat' }),
+    getRemembered: () => ({}),
+    remember: () => undefined,
+    view: {
+      open: (form) => calls.open.push(form),
+      update: (form) => calls.update.push(form),
+      close: () => {
+        calls.close += 1;
+      }
+    }
+  });
+
+  await controller.open();
+  assert.equal(calls.open.length, 1);
+  assert.match(calls.open[0].errors.form, /runtime offline/);
+  assert.deepEqual(calls.open[0].presets.map((preset) => preset.id), ['standard']);
+  assert.equal(controller.isOpen, true);
+  controller.dispose?.();
+});
+
+test('cancel во время открытия отменяет форму; submit после cancel не создаёт', async () => {
+  let resolvePresets;
+  const opened = [];
+  const controller = new NewSessionController({
+    getPresets: () =>
+      new Promise((resolve) => {
+        resolvePresets = resolve;
+      }),
+    getModels: () => ['deepseek-chat'],
+    create: async () => ({ sessionId: 'sess-1' }),
+    getSettings: () => ({}),
+    getRemembered: () => ({}),
+    remember: () => undefined,
+    view: {
+      open: (form) => opened.push(form),
+      update: () => undefined,
+      close: () => undefined
+    }
+  });
+
+  const opening = controller.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.cancel();
+  resolvePresets([{ id: 'worker', title: 'worker' }]);
+  await opening;
+  assert.equal(opened.length, 0, 'форма не открылась после отмены');
+
+  const created = [];
+  const second = new NewSessionController({
+    getPresets: () => [],
+    getModels: () => ['deepseek-chat'],
+    create: async (options) => {
+      created.push(options);
+      return { sessionId: 'sess-2' };
+    },
+    getSettings: () => ({}),
+    getRemembered: () => ({}),
+    remember: () => undefined,
+    view: { open: () => undefined, update: () => undefined, close: () => undefined }
+  });
+  await second.open();
+  second.cancel();
+  await second.submit({
+    preset: 'standard',
+    model: 'deepseek-chat',
+    sandbox: 'workspace-write',
+    approval: 'ask',
+    title: '',
+    confirmDanger: false
+  });
+  assert.equal(created.length, 0, 'submit после cancel не создаёт сессию');
+});
+
+test('ошибка запоминания не ломает уже созданную сессию', async () => {
+  const calls = { close: 0, update: [] };
+  const controller = new NewSessionController({
+    getPresets: () => [],
+    getModels: () => ['deepseek-chat'],
+    create: async () => ({ sessionId: 'sess-1' }),
+    getSettings: () => ({}),
+    getRemembered: () => ({}),
+    remember: () => {
+      throw new Error('globalState недоступен');
+    },
+    view: {
+      open: () => undefined,
+      update: (form) => calls.update.push(form),
+      close: () => {
+        calls.close += 1;
+      }
+    }
+  });
+
+  await controller.open();
+  await controller.submit({
+    preset: 'standard',
+    model: 'deepseek-chat',
+    sandbox: 'workspace-write',
+    approval: 'ask',
+    title: '',
+    confirmDanger: false
+  });
+
+  assert.equal(calls.close, 1, 'форма закрыта');
+  assert.equal(calls.update.length, 0, 'ошибка запоминания не показана как ошибка создания');
 });

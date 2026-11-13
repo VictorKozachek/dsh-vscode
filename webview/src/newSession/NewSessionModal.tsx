@@ -48,7 +48,9 @@ export function NewSessionModal({
   }, []);
 
   const errors: FormErrors = { ...localErrors, ...(form.errors as FormErrors) };
-  const models = filterModels(form.models, modelQuery);
+  const filtered = filterModels(form.models, modelQuery);
+  // Выбранная модель не должна исчезать из списка при поиске.
+  const models = filtered.includes(values.model) ? filtered : [values.model, ...filtered];
 
   const change = (patch: Partial<NewSessionValuesDto>): void => {
     setValues((previous) => {
@@ -128,8 +130,10 @@ export function NewSessionModal({
               </option>
             ))}
           </select>
-          <small className="dsh-field__hint">{presetDescription(form, values.preset)}</small>
-          {errors.preset === undefined ? null : <span className="dsh-field__error">{errors.preset}</span>}
+          <small className="dsh-field__hint">{t(presetDescription(form, values.preset))}</small>
+          {errors.preset === undefined ? null : (
+            <span className="dsh-field__error">{t(errors.preset)}</span>
+          )}
         </label>
 
         <label className="dsh-field">
@@ -154,7 +158,9 @@ export function NewSessionModal({
               </option>
             ))}
           </select>
-          {errors.model === undefined ? null : <span className="dsh-field__error">{errors.model}</span>}
+          {errors.model === undefined ? null : (
+            <span className="dsh-field__error">{t(errors.model)}</span>
+          )}
         </label>
 
         <fieldset className="dsh-field">
@@ -175,7 +181,7 @@ export function NewSessionModal({
           ))}
           {values.sandbox === 'danger-full-access' ? (
             <>
-              <p className="dsh-warning">{DANGER_WARNING}</p>
+              <p className="dsh-warning">{t(DANGER_WARNING)}</p>
               <label className="dsh-checkbox">
                 <input
                   type="checkbox"
@@ -188,7 +194,9 @@ export function NewSessionModal({
               </label>
             </>
           ) : null}
-          {errors.sandbox === undefined ? null : <span className="dsh-field__error">{errors.sandbox}</span>}
+          {errors.sandbox === undefined ? null : (
+            <span className="dsh-field__error">{t(errors.sandbox)}</span>
+          )}
         </fieldset>
 
         <label className="dsh-field">
@@ -205,7 +213,9 @@ export function NewSessionModal({
               </option>
             ))}
           </select>
-          {errors.approval === undefined ? null : <span className="dsh-field__error">{errors.approval}</span>}
+          {errors.approval === undefined ? null : (
+            <span className="dsh-field__error">{t(errors.approval)}</span>
+          )}
         </label>
 
         <label className="dsh-field">
@@ -218,12 +228,14 @@ export function NewSessionModal({
               change({ title: event.target.value });
             }}
           />
-          {errors.title === undefined ? null : <span className="dsh-field__error">{errors.title}</span>}
+          {errors.title === undefined ? null : (
+            <span className="dsh-field__error">{t(errors.title)}</span>
+          )}
         </label>
 
         {errors.form === undefined ? null : (
           <p className="dsh-field__error" role="alert">
-            {errors.form}
+            {t(errors.form)}
           </p>
         )}
 

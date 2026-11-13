@@ -12,8 +12,9 @@ import {
   mergePresets,
   rememberedFromValues,
   validateNewSession,
-  type NewSessionErrors,
   type NewSessionForm,
+  type ApprovalChoice,
+  type SandboxChoice,
   type NewSessionSettings,
   type NewSessionValues,
   type PresetOption,
@@ -30,8 +31,8 @@ export interface NewSessionPorts {
   create(options: {
     readonly preset: string;
     readonly model: string;
-    readonly sandbox: string;
-    readonly approval: string;
+    readonly sandbox: SandboxChoice;
+    readonly approval: ApprovalChoice;
     readonly title: string;
   }): Promise<{ readonly sessionId: string }>;
   getSettings(): NewSessionSettings;
@@ -63,6 +64,8 @@ export class NewSessionController {
   #values: NewSessionValues | undefined;
   #chain: Promise<unknown> = Promise.resolve();
   #open = false;
+  /** Поколение формы: open/cancel инвалидируют незавершённые операции. */
+  #generation = 0;
 
   constructor(options: NewSessionControllerOptions) {
     this.#ports = options;
@@ -76,12 +79,46 @@ export class NewSessionController {
 
   /** Открыть форму: пресеты/модели из рантайма, значения из настроек/памяти. */
   open(): Promise<void> {
+    const generation = ++this.#generation;
     return this.#enqueue(async () => {
-      const presets = mergePresets(await this.#ports.getPresets());
-      const remembered = this.#ports.getRemembered();
+      if (generation !== this.#generation) {
+        return;
+      }
+      let presets;
+      let models;
+      try {
+        presets = mergePresets(await this.#ports.getPresets());
+        models = mergeModels(
+          await this.#ports.getModels(presets[0]?.id ?? 'standard'),
+          this.#ports.getSettings().defaultModel
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.#log(`New Session: не удалось получить пресеты/модели: ${message}`);
+        presets = mergePresets([]);
+        models = mergeModels([], this.#ports.getSettings().defaultModel);
+        const fallback = buildNewSessionValues({
+          settings: this.#ports.getSettings(),
+          remembered: this.#ports.getRemembered()
+        });
+        this.#presets = presets;
+        this.#models = models;
+        this.#values = { ...fallback, model: models[0] ?? fallback.model };
+        this.#open = true;
+        this.#ports.view.open({
+          presets,
+          models,
+          values: this.#values,
+          errors: { form: message }
+        });
+        return;
+      }
+      if (generation !== this.#generation) {
+        return;
+      }
       const defaults = buildNewSessionValues({
         settings: this.#ports.getSettings(),
-        remembered
+        remembered: this.#ports.getRemembered()
       });
       const values: NewSessionValues = {
         ...defaults,
@@ -89,17 +126,13 @@ export class NewSessionController {
           ? defaults.preset
           : 'standard'
       };
-      const models = mergeModels(
-        await this.#ports.getModels(values.preset),
-        values.model
-      );
       this.#presets = presets;
       this.#models = models;
       this.#values = { ...values, model: models[0] ?? values.model };
       this.#open = true;
       this.#ports.view.open({
-        presets: this.#presets,
-        models: this.#models,
+        presets,
+        models,
         values: this.#values,
         errors: {}
       });
@@ -108,8 +141,9 @@ export class NewSessionController {
 
   /** Отправить форму: валидация → создание → запоминание → закрыть. */
   submit(values: NewSessionValues): Promise<void> {
+    const generation = this.#generation;
     return this.#enqueue(async () => {
-      if (!this.#open) {
+      if (!this.#open || generation !== this.#generation) {
         return;
       }
       const errors = validateNewSession(values, {
@@ -130,7 +164,20 @@ export class NewSessionController {
       const options = buildCreateOptions(values, this.#now());
       try {
         const created = await this.#ports.create(options);
-        await this.#ports.remember(rememberedFromValues(values));
+        // Отмена во время создания: сессия уже есть, форму не «закрываем»
+        // повторно, но и ошибкой это не считаем.
+        if (generation !== this.#generation) {
+          this.#log(`New Session: сессия ${created.sessionId} создана после отмены`);
+          return;
+        }
+        try {
+          await this.#ports.remember(rememberedFromValues(values));
+        } catch (error) {
+          // Сессия уже создана: ошибка запоминания не должна ломать форму.
+          this.#log(
+            `New Session: не удалось запомнить значения: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
         this.#open = false;
         this.#values = undefined;
         this.#log(`New Session: создана сессия ${created.sessionId}`);
@@ -138,13 +185,15 @@ export class NewSessionController {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.#log(`New Session: ошибка создания: ${message}`);
-        const formErrors: NewSessionErrors = { form: message };
+        if (generation !== this.#generation) {
+          return;
+        }
         this.#values = values;
         this.#ports.view.update({
           presets: this.#presets,
           models: this.#models,
           values,
-          errors: formErrors
+          errors: { form: message }
         });
       }
     });
@@ -153,8 +202,10 @@ export class NewSessionController {
   /** Отмена/закрытие формы. */
   cancel(): void {
     if (!this.#open) {
+      this.#generation += 1;
       return;
     }
+    this.#generation += 1;
     this.#open = false;
     this.#values = undefined;
     this.#ports.view.close();

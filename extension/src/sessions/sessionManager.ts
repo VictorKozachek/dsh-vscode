@@ -22,6 +22,7 @@ import type {
   DshMethod,
   DshMethodParams,
   DshMethodResult,
+  DshSandboxMode,
   DshSessionSummary
 } from '@dsh-vscode/protocol';
 
@@ -230,7 +231,15 @@ export class SessionManager {
   }
 
   /** Создаёт новую сессию (`DSH: New Session`). */
-  async create(options: { title?: string; model?: string } = {}): Promise<SessionSnapshot> {
+  async create(
+    options: {
+      title?: string;
+      model?: string;
+      preset?: string;
+      sandbox?: DshSandboxMode;
+      approval?: 'ask' | 'auto' | 'never';
+    } = {}
+  ): Promise<SessionSnapshot> {
     return this.#run(async () => {
       await this.#ensureBridge();
       return this.#createLocked(options);
@@ -356,13 +365,24 @@ export class SessionManager {
 
   // --- внутреннее ----------------------------------------------------------
 
-  async #createLocked(options: { title?: string; model?: string } = {}): Promise<SessionSnapshot> {
+  async #createLocked(
+    options: {
+      title?: string;
+      model?: string;
+      preset?: string;
+      sandbox?: DshSandboxMode;
+      approval?: 'ask' | 'auto' | 'never';
+    } = {}
+  ): Promise<SessionSnapshot> {
     let created: { sessionId: string };
     try {
       created = await this.#bridge.request('session.create', {
         workspaceId: this.#workspaceId,
         ...(options.title === undefined ? {} : { title: options.title }),
-        ...(options.model === undefined ? {} : { model: options.model })
+        ...(options.model === undefined ? {} : { model: options.model }),
+        ...(options.preset === undefined ? {} : { preset: options.preset }),
+        ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+        ...(options.approval === undefined ? {} : { approval: options.approval })
       });
     } catch (error) {
       this.#status = 'offline';

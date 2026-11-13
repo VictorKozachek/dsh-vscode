@@ -82,26 +82,26 @@ test('валидация: пустые/недопустимые значения
 
   assert.equal(hasErrors(validateNewSession(values(), options)), false);
 
-  assert.equal(validateNewSession(values({ preset: '' }), options).preset, 'Выберите пресет');
+  assert.equal(validateNewSession(values({ preset: '' }), options).preset, 'newSession.error.presetRequired');
   assert.match(
     validateNewSession(values({ preset: 'missing' }), options).preset,
-    /Неизвестный пресет/
+    /presetUnknown/
   );
-  assert.equal(validateNewSession(values({ model: ' ' }), options).model, 'Выберите модель');
+  assert.equal(validateNewSession(values({ model: ' ' }), options).model, 'newSession.error.modelRequired');
   assert.match(
     validateNewSession(values({ model: 'ghost' }), options).model,
-    /Модель недоступна/
+    /modelUnknown/
   );
   assert.match(
     validateNewSession(values({ sandbox: 'read-only', approval: 'ask', title: 'x'.repeat(MAX_TITLE_LENGTH + 1) }), options).title,
-    /длиннее/
+    /titleTooLong/
   );
 });
 
 test('danger-full-access требует явного подтверждения', () => {
   const options = { presets: PRESETS, models: ['deepseek-chat'] };
   const denied = validateNewSession(values({ sandbox: 'danger-full-access' }), options);
-  assert.match(denied.sandbox, /подтверждения/);
+  assert.match(denied.sandbox, /dangerConfirm/);
 
   const confirmed = validateNewSession(
     values({ sandbox: 'danger-full-access', confirmDanger: true }),

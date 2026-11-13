@@ -109,11 +109,20 @@ export interface DshSessionSummary {
   readonly updatedAt: string;
 }
 
+/** Пресет агента при создании сессии (#023). */
+export type DshAgentPreset = string;
+
 /** `session.create`. */
 export interface SessionCreateParams {
   readonly workspaceId: string;
   readonly model?: string;
   readonly title?: string;
+  /** Пресет рантайма (`standard`, роли и т.п.); применяет рантайм #021. */
+  readonly preset?: DshAgentPreset;
+  /** Sandbox-режим сессии (`dsh.sandboxMode`). */
+  readonly sandbox?: DshSandboxMode;
+  /** Политика подтверждений (`dsh.approvalPolicy`). */
+  readonly approval?: 'ask' | 'auto' | 'never';
 }
 
 export interface SessionCreateResult {

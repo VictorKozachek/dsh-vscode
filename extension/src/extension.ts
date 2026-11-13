@@ -141,7 +141,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (manager === null) {
         throw new Error('менеджер сессий не подключён: откройте воркспейс');
       }
-      const snapshot = await manager.create({ title: options.title, model: options.model });
+      const snapshot = await manager.create({
+        title: options.title,
+        model: options.model,
+        preset: options.preset,
+        sandbox: options.sandbox,
+        approval: options.approval
+      });
       return { sessionId: snapshot.sessionId ?? '' };
     },
     getSettings: () => {

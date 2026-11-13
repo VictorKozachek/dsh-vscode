@@ -52,7 +52,18 @@ const ru = {
   'newSession.titlePlaceholder': 'Сгенерируется из пресета и времени',
   'newSession.dangerConfirm': 'Понимаю риски danger-full-access',
   'newSession.cancel': 'Отмена',
-  'newSession.create': 'Создать'
+  'newSession.create': 'Создать',
+  'newSession.presetFallback': 'Пресет рантайма DSH',
+  'newSession.dangerWarning':
+    'danger-full-access снимает ограничения sandbox: агент сможет писать в любые файлы и запускать команды без ограничений воркспейса.',
+  'newSession.error.presetRequired': 'Выберите пресет',
+  'newSession.error.presetUnknown': 'Пресет недоступен',
+  'newSession.error.modelRequired': 'Выберите модель',
+  'newSession.error.modelUnknown': 'Модель недоступна',
+  'newSession.error.sandboxUnknown': 'Неизвестный sandbox-режим',
+  'newSession.error.dangerConfirm': 'danger-full-access требует явного подтверждения',
+  'newSession.error.approvalUnknown': 'Неизвестная политика подтверждений',
+  'newSession.error.titleTooLong': 'Слишком длинный заголовок'
 } as const;
 
 const en: Readonly<Record<keyof typeof ru, string>> = {
@@ -100,7 +111,18 @@ const en: Readonly<Record<keyof typeof ru, string>> = {
   'newSession.titlePlaceholder': 'Generated from preset and time',
   'newSession.dangerConfirm': 'I understand danger-full-access risks',
   'newSession.cancel': 'Cancel',
-  'newSession.create': 'Create'
+  'newSession.create': 'Create',
+  'newSession.presetFallback': 'DSH runtime preset',
+  'newSession.dangerWarning':
+    'danger-full-access removes sandbox limits: the agent can write any file and run commands outside the workspace.',
+  'newSession.error.presetRequired': 'Choose a preset',
+  'newSession.error.presetUnknown': 'Preset unavailable',
+  'newSession.error.modelRequired': 'Choose a model',
+  'newSession.error.modelUnknown': 'Model unavailable',
+  'newSession.error.sandboxUnknown': 'Unknown sandbox mode',
+  'newSession.error.dangerConfirm': 'danger-full-access requires explicit confirmation',
+  'newSession.error.approvalUnknown': 'Unknown approval policy',
+  'newSession.error.titleTooLong': 'Title is too long'
 };
 
 /** Ключ строки перевода. */
@@ -113,11 +135,16 @@ export const DICTIONARIES: Readonly<Record<Locale, Readonly<Record<TranslationKe
 };
 
 /** Функция перевода. */
-export type Translator = (key: TranslationKey) => string;
+export type Translator = (key: TranslationKey | string) => string;
 
-/** Перевод для локали (с фолбэком на ru). */
+/**
+ * Перевод для локали (с фолбэком на ru).
+ *
+ * Неизвестная строка возвращается как есть: так в UI попадают тексты ошибок
+ * рантайма и описания пресетов, пришедшие из extension host.
+ */
 export function createTranslator(locale: Locale): Translator {
-  return (key) => DICTIONARIES[locale]?.[key] ?? ru[key];
+  return (key) => DICTIONARIES[locale]?.[key as TranslationKey] ?? ru[key as TranslationKey] ?? key;
 }
 
 /** Локаль по языку VS Code / браузера: `ru`, иначе `en`. */

@@ -32,20 +32,25 @@ export function validateForm(
 ): FormErrors {
   const errors: FormErrors = {};
   if (values.preset.trim() === '') {
-    errors.preset = 'Выберите пресет';
+    errors.preset = 'newSession.error.presetRequired';
   } else if (!form.presets.some((preset) => preset.id === values.preset)) {
-    errors.preset = 'Пресет недоступен';
+    errors.preset = 'newSession.error.presetUnknown';
   }
   if (values.model.trim() === '') {
-    errors.model = 'Выберите модель';
+    errors.model = 'newSession.error.modelRequired';
   } else if (form.models.length > 0 && !form.models.includes(values.model.trim())) {
-    errors.model = 'Модель недоступна';
+    errors.model = 'newSession.error.modelUnknown';
   }
-  if (values.sandbox === 'danger-full-access' && !values.confirmDanger) {
-    errors.sandbox = 'danger-full-access требует подтверждения';
+  if (!SANDBOX_OPTIONS.includes(values.sandbox)) {
+    errors.sandbox = 'newSession.error.sandboxUnknown';
+  } else if (values.sandbox === 'danger-full-access' && !values.confirmDanger) {
+    errors.sandbox = 'newSession.error.dangerConfirm';
+  }
+  if (!APPROVAL_OPTIONS.includes(values.approval)) {
+    errors.approval = 'newSession.error.approvalUnknown';
   }
   if (values.title.length > 120) {
-    errors.title = 'Слишком длинный заголовок';
+    errors.title = 'newSession.error.titleTooLong';
   }
   return errors;
 }
@@ -94,9 +99,8 @@ export function presetById(
 
 /** Описание выбранного пресета (для подписи рядом с селектом). */
 export function presetDescription(form: NewSessionFormDto, presetId: string): string {
-  return presetById(form, presetId)?.description ?? 'Пресет рантайма DSH';
+  return presetById(form, presetId)?.description ?? 'newSession.presetFallback';
 }
 
-/** Предупреждение для danger-full-access. */
-export const DANGER_WARNING =
-  'danger-full-access снимает ограничения sandbox: агент сможет писать в любые файлы и запускать команды без ограничений воркспейса.';
+/** Ключ i18n с предупреждением для danger-full-access. */
+export const DANGER_WARNING = 'newSession.dangerWarning';
