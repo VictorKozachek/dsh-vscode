@@ -52,6 +52,8 @@ export interface NewSessionViewPort {
 export interface NewSessionControllerOptions extends NewSessionPorts {
   readonly now?: (() => Date) | undefined;
   readonly logger?: ((line: string) => void) | undefined;
+  /** Уведомление о созданной сессии (в т.ч. созданной после отмены формы). */
+  readonly notifyCreated?: ((sessionId: string) => void) | undefined;
 }
 
 /** Диалог создания сессии. */
@@ -93,6 +95,9 @@ export class NewSessionController {
           this.#ports.getSettings().defaultModel
         );
       } catch (error) {
+        if (generation !== this.#generation) {
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         this.#log(`New Session: не удалось получить пресеты/модели: ${message}`);
         presets = mergePresets([]);
@@ -167,7 +172,9 @@ export class NewSessionController {
         // Отмена во время создания: сессия уже есть, форму не «закрываем»
         // повторно, но и ошибкой это не считаем.
         if (generation !== this.#generation) {
+          // Отмена не отменяет уже начатое создание: сообщаем о сессии явно.
           this.#log(`New Session: сессия ${created.sessionId} создана после отмены`);
+          this.#ports.notifyCreated?.(created.sessionId);
           return;
         }
         try {
@@ -182,6 +189,7 @@ export class NewSessionController {
         this.#values = undefined;
         this.#log(`New Session: создана сессия ${created.sessionId}`);
         this.#ports.view.close();
+        this.#ports.notifyCreated?.(created.sessionId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.#log(`New Session: ошибка создания: ${message}`);

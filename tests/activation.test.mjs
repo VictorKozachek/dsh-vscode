@@ -218,7 +218,9 @@ test('активация: New Session открывает форму и созд�
   const open = state.webviewMessages.find((message) => message.type === 'newSessionOpen');
   assert.ok(open, 'форма открыта');
   assert.equal(open.form.values.model, 'deepseek-v4');
-  assert.ok(open.form.presets.some((preset) => preset.id === 'standard'));
+  const standard = open.form.presets.find((preset) => preset.id === 'standard');
+  assert.ok(standard, 'standard есть в форме');
+  assert.equal(standard.description, undefined, 'без русского описания для en-UI');
 
   await state.webviewListeners.at(-1)({
     type: 'newSessionSubmit',

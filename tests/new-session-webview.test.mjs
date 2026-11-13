@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createTranslator } from '../webview/src/i18n/index.ts';
 import {
   DANGER_WARNING,
   filterModels,
@@ -63,4 +64,25 @@ test('фокус-ловушка ходит по кругу', () => {
   assert.equal(nextFocusIndex(0, 3, 1), 1);
   assert.equal(nextFocusIndex(2, 3, 1), 0);
   assert.equal(nextFocusIndex(0, 3, -1), 2);
+});
+
+test('поиск моделей сохраняет выбранную модель', () => {
+  assert.deepEqual(filterModels(FORM.models, 'v4', 'deepseek-chat'), ['deepseek-chat', 'deepseek-v4']);
+  assert.deepEqual(filterModels(FORM.models, 'v4', 'deepseek-v4'), ['deepseek-v4']);
+  assert.deepEqual(filterModels(FORM.models, '', undefined), FORM.models);
+});
+
+test('i18n: ключи формы есть в ru и en', () => {
+  const ru = createTranslator('ru');
+  const en = createTranslator('en');
+  for (const key of [
+    'newSession.error.presetRequired',
+    'newSession.error.dangerConfirm',
+    'newSession.dangerWarning',
+    'newSession.presetFallback'
+  ]) {
+    assert.notEqual(ru(key), key, `ru: ${key}`);
+    assert.notEqual(en(key), key, `en: ${key}`);
+  }
+  assert.notEqual(ru('newSession.error.dangerConfirm'), en('newSession.error.dangerConfirm'));
 });

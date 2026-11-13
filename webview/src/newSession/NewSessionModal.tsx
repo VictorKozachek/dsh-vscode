@@ -48,9 +48,7 @@ export function NewSessionModal({
   }, []);
 
   const errors: FormErrors = { ...localErrors, ...(form.errors as FormErrors) };
-  const filtered = filterModels(form.models, modelQuery);
-  // Выбранная модель не должна исчезать из списка при поиске.
-  const models = filtered.includes(values.model) ? filtered : [values.model, ...filtered];
+  const models = filterModels(form.models, modelQuery, values.model);
 
   const change = (patch: Partial<NewSessionValuesDto>): void => {
     setValues((previous) => {

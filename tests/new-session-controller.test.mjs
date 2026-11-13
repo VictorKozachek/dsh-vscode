@@ -241,3 +241,71 @@ test('ошибка запоминания не ломает уже создан�
   assert.equal(calls.close, 1, 'форма закрыта');
   assert.equal(calls.update.length, 0, 'ошибка запоминания не показана как ошибка создания');
 });
+
+test('ошибка загрузки пресетов после cancel не открывает форму', async () => {
+  let rejectPresets;
+  const opened = [];
+  const controller = new NewSessionController({
+    getPresets: () =>
+      new Promise((_resolve, reject) => {
+        rejectPresets = reject;
+      }),
+    getModels: () => ['deepseek-chat'],
+    create: async () => ({ sessionId: 'sess-1' }),
+    getSettings: () => ({}),
+    getRemembered: () => ({}),
+    remember: () => undefined,
+    view: { open: (form) => opened.push(form), update: () => undefined, close: () => undefined }
+  });
+
+  const opening = controller.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.cancel();
+  rejectPresets(new Error('runtime offline'));
+  await opening;
+  assert.equal(opened.length, 0, 'форма не открылась после отмены');
+});
+
+test('cancel во время создания: сессия создаётся и пользователь уведомлён', async () => {
+  let resolveCreate;
+  const created = [];
+  const notified = [];
+  let closes = 0;
+  const controller = new NewSessionController({
+    getPresets: () => [],
+    getModels: () => ['deepseek-chat'],
+    create: () =>
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    getSettings: () => ({}),
+    getRemembered: () => ({}),
+    remember: () => undefined,
+    view: {
+      open: () => undefined,
+      update: () => undefined,
+      close: () => {
+        closes += 1;
+      }
+    },
+    notifyCreated: (sessionId) => notified.push(sessionId)
+  });
+
+  await controller.open();
+  const submitting = controller.submit({
+    preset: 'standard',
+    model: 'deepseek-chat',
+    sandbox: 'workspace-write',
+    approval: 'ask',
+    title: '',
+    confirmDanger: false
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.cancel();
+  resolveCreate({ sessionId: 'sess-late' });
+  await submitting;
+
+  assert.equal(closes, 1, 'форму закрыл cancel');
+  assert.deepEqual(notified, ['sess-late'], 'о созданной сессии сообщили');
+  void created;
+});

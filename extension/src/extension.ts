@@ -125,13 +125,9 @@ export function activate(context: vscode.ExtensionContext): void {
     void chatView.postMessage({ type, form });
   };
   newSessionController = new NewSessionController({
-    getPresets: async () => [
-      {
-        id: 'standard',
-        title: 'standard',
-        description: 'Базовый пресет DSH (пресеты рантайма появятся вместе с #021)'
-      }
-    ],
+    // Пресеты рантайма появятся вместе с #021; описание не задаём, чтобы
+    // WebView показал локализованный fallback, а не русский текст в en-UI.
+    getPresets: async () => [{ id: 'standard', title: 'standard' }],
     getModels: async () => {
       const configuration = vscode.workspace.getConfiguration('dsh');
       return [configuration.get<string>('defaultModel') ?? 'deepseek-chat'];
@@ -177,6 +173,9 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     logger: (line) => {
       log.appendLine(line);
+    },
+    notifyCreated: (sessionId) => {
+      void vscode.window.showInformationMessage(`DSH: сессия ${sessionId} создана.`);
     }
   });
 

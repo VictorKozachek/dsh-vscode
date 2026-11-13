@@ -55,13 +55,22 @@ export function validateForm(
   return errors;
 }
 
-/** Поиск моделей по подстроке (регистронезависимый). */
-export function filterModels(models: readonly string[], query: string): readonly string[] {
+/**
+ * Поиск моделей по подстроке (регистронезависимый). Выбранная модель всегда
+ * остаётся в списке, даже если не совпала с запросом.
+ */
+export function filterModels(
+  models: readonly string[],
+  query: string,
+  selected?: string | undefined
+): readonly string[] {
   const needle = query.trim().toLowerCase();
-  if (needle === '') {
-    return models;
+  const filtered =
+    needle === '' ? [...models] : models.filter((model) => model.toLowerCase().includes(needle));
+  if (selected !== undefined && selected !== '' && !filtered.includes(selected)) {
+    filtered.unshift(selected);
   }
-  return models.filter((model) => model.toLowerCase().includes(needle));
+  return filtered;
 }
 
 /** Следующий индекс фокуса по кругу. */
