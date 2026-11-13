@@ -430,3 +430,92 @@ body {
   color: var(--vscode-errorForeground, #f14c4c);
   border-color: var(--vscode-errorForeground, #f14c4c);
 }
+
+/* --- New Session (#023) -------------------------------------------------- */
+
+.dsh-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.dsh-modal {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dsh-modal__title {
+  margin: 0 0 12px;
+  font-size: 1.1em;
+}
+
+.dsh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 10px;
+  border: none;
+  padding: 0;
+}
+
+.dsh-field > span,
+.dsh-field > legend {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+
+.dsh-field input[type='text'],
+.dsh-field input[type='search'],
+.dsh-field select {
+  padding: 4px 6px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+}
+
+.dsh-field input:focus,
+.dsh-field select:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+.dsh-field__hint {
+  color: var(--vscode-descriptionForeground);
+}
+
+.dsh-field__error {
+  color: var(--vscode-errorForeground, #f48771);
+  font-size: 0.9em;
+}
+
+.dsh-warning {
+  margin: 6px 0;
+  padding: 6px;
+  border-left: 3px solid var(--vscode-charts-yellow, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+  font-size: 0.9em;
+}
+
+.dsh-radio,
+.dsh-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dsh-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}

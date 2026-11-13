@@ -41,7 +41,18 @@ const ru = {
   'markdown.copy': 'Копировать',
   'markdown.copied': 'Скопировано',
   'message.cancelled': 'остановлено',
-  'message.error': 'ошибка'
+  'message.error': 'ошибка',
+  'newSession.title': 'Новая сессия',
+  'newSession.preset': 'Пресет',
+  'newSession.model': 'Модель',
+  'newSession.modelSearch': 'Поиск модели',
+  'newSession.sandbox': 'Sandbox',
+  'newSession.approval': 'Подтверждения',
+  'newSession.titleField': 'Заголовок',
+  'newSession.titlePlaceholder': 'Сгенерируется из пресета и времени',
+  'newSession.dangerConfirm': 'Понимаю риски danger-full-access',
+  'newSession.cancel': 'Отмена',
+  'newSession.create': 'Создать'
 } as const;
 
 const en: Readonly<Record<keyof typeof ru, string>> = {
@@ -78,7 +89,18 @@ const en: Readonly<Record<keyof typeof ru, string>> = {
   'markdown.copy': 'Copy',
   'markdown.copied': 'Copied',
   'message.cancelled': 'stopped',
-  'message.error': 'error'
+  'message.error': 'error',
+  'newSession.title': 'New session',
+  'newSession.preset': 'Preset',
+  'newSession.model': 'Model',
+  'newSession.modelSearch': 'Search model',
+  'newSession.sandbox': 'Sandbox',
+  'newSession.approval': 'Approvals',
+  'newSession.titleField': 'Title',
+  'newSession.titlePlaceholder': 'Generated from preset and time',
+  'newSession.dangerConfirm': 'I understand danger-full-access risks',
+  'newSession.cancel': 'Cancel',
+  'newSession.create': 'Create'
 };
 
 /** Ключ строки перевода. */

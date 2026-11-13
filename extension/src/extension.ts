@@ -3,6 +3,13 @@ import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
 import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
+import { NewSessionController } from './views/newSessionController';
+import {
+  REMEMBERED_KEY,
+  type NewSessionForm,
+  type NewSessionValues,
+  type RememberedNewSession
+} from './views/newSessionModel';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
 
 /**
@@ -45,6 +52,9 @@ let sessionManager: SessionManager | null = null;
 export function setSessionManager(manager: SessionManager | null): void {
   sessionManager = manager;
 }
+
+/** Контроллер формы New Session (#023); создаётся вместе с панелью. */
+let newSessionController: NewSessionController | null = null;
 
 /** Команды, которые обслуживает SessionManager (не заглушки). */
 const SESSION_COMMANDS = new Set<string>([
@@ -94,7 +104,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_IDS.newSession, () => sessionCommands.newSession()),
+    vscode.commands.registerCommand(COMMAND_IDS.newSession, () => {
+      // Без менеджера сессий форма бессмысленна: прежнее понятное сообщение.
+      if (sessionManager === null || newSessionController === null) {
+        return sessionCommands.newSession();
+      }
+      return newSessionController.open();
+    }),
     vscode.commands.registerCommand(COMMAND_IDS.resumeLastSession, () =>
       sessionCommands.resumeLast()
     ),
@@ -105,11 +121,72 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
   );
 
+  const postForm = (type: 'newSessionOpen' | 'newSessionUpdate', form: NewSessionForm): void => {
+    void chatView.postMessage({ type, form });
+  };
+  newSessionController = new NewSessionController({
+    getPresets: async () => [
+      {
+        id: 'standard',
+        title: 'standard',
+        description: 'Базовый пресет DSH (пресеты рантайма появятся вместе с #021)'
+      }
+    ],
+    getModels: async () => {
+      const configuration = vscode.workspace.getConfiguration('dsh');
+      return [configuration.get<string>('defaultModel') ?? 'deepseek-chat'];
+    },
+    create: async (options) => {
+      const manager = sessionManager;
+      if (manager === null) {
+        throw new Error('менеджер сессий не подключён: откройте воркспейс');
+      }
+      const snapshot = await manager.create({ title: options.title, model: options.model });
+      return { sessionId: snapshot.sessionId ?? '' };
+    },
+    getSettings: () => {
+      const configuration = vscode.workspace.getConfiguration('dsh');
+      return {
+        defaultModel: configuration.get<string>('defaultModel'),
+        sandboxMode: configuration.get<string>('sandboxMode'),
+        approvalPolicy: configuration.get<string>('approvalPolicy')
+      };
+    },
+    getRemembered: () =>
+      context.globalState.get<RememberedNewSession>(REMEMBERED_KEY, {}) ?? {},
+    remember: async (values) => {
+      await context.globalState.update(REMEMBERED_KEY, values);
+    },
+    view: {
+      open: (form) => {
+        void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+        postForm('newSessionOpen', form);
+      },
+      update: (form) => {
+        postForm('newSessionUpdate', form);
+      },
+      close: () => {
+        void chatView.postMessage({ type: 'newSessionClose' });
+      }
+    },
+    logger: (line) => {
+      log.appendLine(line);
+    }
+  });
+
   const chatView = new ChatViewProvider({
     extensionUri: context.extensionUri,
     state: () => currentPanelState(),
     log: (line) => {
       log.appendLine(line);
+    },
+    newSession: {
+      submit: async (values) => {
+        await newSessionController?.submit(values as NewSessionValues);
+      },
+      cancel: () => {
+        newSessionController?.cancel();
+      }
     }
   });
   context.subscriptions.push(

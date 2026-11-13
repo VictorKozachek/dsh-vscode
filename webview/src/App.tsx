@@ -2,12 +2,19 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import type { ReactElement } from 'react';
 
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
+import { NewSessionModal } from './newSession/NewSessionModal';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
 import { PanelStatus } from './components/PanelStatus';
 import { createTranslator, resolveLocale } from './i18n';
-import type { ChatPanelState, ChatPanelStatus, ExtensionToWebview } from './messages';
+import type {
+  ChatPanelState,
+  ChatPanelStatus,
+  ExtensionToWebview,
+  NewSessionFormDto,
+  NewSessionValuesDto
+} from './messages';
 import { onExtensionMessage, postToExtension } from './vscodeApi';
 
 /**
@@ -25,6 +32,7 @@ export function App(): ReactElement {
   const [panel, setPanel] = useState<ChatPanelState | null>(null);
   const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
+  const [newSession, setNewSession] = useState<NewSessionFormDto | null>(null);
 
   const t = useMemo(() => createTranslator(locale), [locale]);
 
@@ -100,6 +108,15 @@ export function App(): ReactElement {
           dispatch({ type: 'cancelled' });
           break;
         }
+        case 'newSessionOpen':
+        case 'newSessionUpdate': {
+          setNewSession(message.form);
+          break;
+        }
+        case 'newSessionClose': {
+          setNewSession(null);
+          break;
+        }
         default:
           break;
       }
@@ -120,6 +137,14 @@ export function App(): ReactElement {
 
   const stop = useCallback(() => {
     postToExtension({ type: 'stop' });
+  }, []);
+
+  const submitNewSession = useCallback((values: NewSessionValuesDto) => {
+    postToExtension({ type: 'newSessionSubmit', values });
+  }, []);
+
+  const cancelNewSession = useCallback(() => {
+    postToExtension({ type: 'newSessionCancel' });
   }, []);
 
   // Эхо-режим каркаса (без ChatController) шлёт chatStatus из ChatSession,
@@ -145,6 +170,14 @@ export function App(): ReactElement {
       />
       <MessageList t={t} entries={feed.entries} />
       <Composer t={t} value={draft} onChange={setDraft} onSubmit={send} />
+      {newSession === null ? null : (
+        <NewSessionModal
+          t={t}
+          form={newSession}
+          onSubmit={submitNewSession}
+          onCancel={cancelNewSession}
+        />
+      )}
       <PanelStatus t={t} status={panelStatus} streamStatus={feed.status} error={feed.error} />
     </main>
   );

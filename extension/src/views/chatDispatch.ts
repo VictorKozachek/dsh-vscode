@@ -18,6 +18,19 @@ export interface ChatDispatchSessionPort {
   ): ExtensionMessage[];
 }
 
+/** Порт формы New Session (#023). */
+export interface NewSessionDispatchPort {
+  submit(values: {
+    readonly preset: string;
+    readonly model: string;
+    readonly sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+    readonly approval: 'ask' | 'auto' | 'never';
+    readonly title: string;
+    readonly confirmDanger: boolean;
+  }): void | Promise<void>;
+  cancel(): void;
+}
+
 /** Зависимости диспетчера. */
 export interface ChatDispatchOptions {
   /** Потоковый чат (#008); без него — эхо-режим каркаса (#005). */
@@ -26,6 +39,8 @@ export interface ChatDispatchOptions {
   readonly state: () => Omit<ChatPanelStateDto, 'status'>;
   readonly post: (message: ExtensionMessage) => Promise<void> | void;
   readonly log?: ((line: string) => void) | undefined;
+  /** Форма New Session (#023). */
+  readonly newSession?: NewSessionDispatchPort | undefined;
 }
 
 /**
@@ -45,6 +60,15 @@ export async function dispatchWebviewMessage(
   const emit = (outgoing: ExtensionMessage): void => {
     void post(outgoing);
   };
+
+  if (message.kind === 'newSessionSubmit') {
+    await options.newSession?.submit(message.values);
+    return;
+  }
+  if (message.kind === 'newSessionCancel') {
+    options.newSession?.cancel();
+    return;
+  }
 
   const chat = options.chat;
   if (chat !== undefined) {

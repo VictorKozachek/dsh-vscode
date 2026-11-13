@@ -16,6 +16,7 @@ import * as vscode from 'vscode';
 
 import type { ChatController } from './chatEvents';
 import { dispatchWebviewMessage } from './chatDispatch';
+import type { NewSessionDispatchPort } from './chatDispatch';
 import {
   ChatSession,
   buildChatViewHtml,
@@ -42,6 +43,8 @@ export interface ChatViewProviderOptions {
    * без него панель работает в эхо-режиме каркаса.
    */
   readonly chat?: ChatController | undefined;
+  /** Форма New Session (#023). */
+  readonly newSession?: NewSessionDispatchPort | undefined;
 }
 
 const MAX_MESSAGES = 200;

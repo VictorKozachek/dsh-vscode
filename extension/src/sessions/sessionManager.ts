@@ -230,7 +230,7 @@ export class SessionManager {
   }
 
   /** Создаёт новую сессию (`DSH: New Session`). */
-  async create(options: { title?: string } = {}): Promise<SessionSnapshot> {
+  async create(options: { title?: string; model?: string } = {}): Promise<SessionSnapshot> {
     return this.#run(async () => {
       await this.#ensureBridge();
       return this.#createLocked(options);
@@ -356,12 +356,13 @@ export class SessionManager {
 
   // --- внутреннее ----------------------------------------------------------
 
-  async #createLocked(options: { title?: string } = {}): Promise<SessionSnapshot> {
+  async #createLocked(options: { title?: string; model?: string } = {}): Promise<SessionSnapshot> {
     let created: { sessionId: string };
     try {
       created = await this.#bridge.request('session.create', {
         workspaceId: this.#workspaceId,
-        ...(options.title === undefined ? {} : { title: options.title })
+        ...(options.title === undefined ? {} : { title: options.title }),
+        ...(options.model === undefined ? {} : { model: options.model })
       });
     } catch (error) {
       this.#status = 'offline';

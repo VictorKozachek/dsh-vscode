@@ -6,8 +6,39 @@
  * `tests/chat-view.test.mjs`.
  */
 
+/** Пресет рантайма для формы New Session. */
+export interface NewSessionPresetDto {
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string | undefined;
+}
+
+/** Значения формы New Session (wire). */
+export interface NewSessionValuesDto {
+  readonly preset: string;
+  readonly model: string;
+  readonly sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  readonly approval: 'ask' | 'auto' | 'never';
+  readonly title: string;
+  readonly confirmDanger: boolean;
+}
+
+/** Форма New Session. */
+export interface NewSessionFormDto {
+  readonly presets: readonly NewSessionPresetDto[];
+  readonly models: readonly string[];
+  readonly values: NewSessionValuesDto;
+  readonly errors: Readonly<Record<string, string>>;
+}
+
 /** Сообщения WebView → extension host. */
-export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
+export const WEBVIEW_MESSAGE_TYPES = [
+  'ready',
+  'sendMessage',
+  'stop',
+  'newSessionSubmit',
+  'newSessionCancel'
+] as const;
 
 /** Сообщения extension host → WebView. */
 export const EXTENSION_MESSAGE_TYPES = [
@@ -20,7 +51,10 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolCall',
   'chatToolResult',
   'chatDone',
-  'chatCancelled'
+  'chatCancelled',
+  'newSessionOpen',
+  'newSessionUpdate',
+  'newSessionClose'
 ] as const;
 
 /** Статус потока ответа. */
@@ -67,7 +101,9 @@ export interface ChatPanelState {
 export type WebviewToExtension =
   | { readonly type: 'ready' }
   | { readonly type: 'sendMessage'; readonly text: string }
-  | { readonly type: 'stop' };
+  | { readonly type: 'stop' }
+  | { readonly type: 'newSessionSubmit'; readonly values: NewSessionValuesDto }
+  | { readonly type: 'newSessionCancel' };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =
@@ -80,4 +116,7 @@ export type ExtensionToWebview =
   | { readonly type: 'chatToolCall'; readonly call: ChatToolCall }
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResult }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
-  | { readonly type: 'chatCancelled' };
+  | { readonly type: 'chatCancelled' }
+  | { readonly type: 'newSessionOpen'; readonly form: NewSessionFormDto }
+  | { readonly type: 'newSessionUpdate'; readonly form: NewSessionFormDto }
+  | { readonly type: 'newSessionClose' };
