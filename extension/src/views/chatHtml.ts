@@ -28,6 +28,12 @@ export interface ChatPanelStateDto {
   readonly locale: 'ru' | 'en';
 }
 
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessageDto }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCallDto }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResultDto };
+
 /** Состояние привязки чата к сессии (#024). */
 export interface ChatSessionDto {
   readonly sessionId: string | null;
@@ -92,7 +98,8 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatDone',
   'chatCancelled',
   'chatSession',
-  'composerDraft'
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Сообщения extension → WebView. */
@@ -108,7 +115,8 @@ export type ExtensionMessage =
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
-  | { readonly type: 'composerDraft'; readonly text: string };
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по

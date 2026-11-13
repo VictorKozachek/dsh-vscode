@@ -6,6 +6,12 @@
  * `tests/chat-view.test.mjs`.
  */
 
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessage }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCall }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResult };
+
 /** Состояние привязки чата к сессии (#024). */
 export interface ChatSessionDto {
   readonly sessionId: string | null;
@@ -39,7 +45,8 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatDone',
   'chatCancelled',
   'chatSession',
-  'composerDraft'
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Статус потока ответа. */
@@ -104,4 +111,5 @@ export type ExtensionToWebview =
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
-  | { readonly type: 'composerDraft'; readonly text: string };
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };

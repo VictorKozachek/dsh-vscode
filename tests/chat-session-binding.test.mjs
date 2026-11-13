@@ -110,8 +110,8 @@ test('переключение сессии: история, черновик и
   sessions.switchTo('sess-b');
   await new Promise((resolve) => setImmediate(resolve));
 
-  const replaced = posts.find((message) => message.type === 'replaceMessages');
-  assert.deepEqual(replaced.messages, [], 'у B истории нет — чистый лист');
+  const replaced = posts.find((message) => message.type === 'replaceFeed');
+  assert.deepEqual(replaced.records, [], 'у B истории нет — чистый лист');
   const sessionMessage = posts.find((message) => message.type === 'chatSession');
   assert.equal(sessionMessage.session.sessionId, 'sess-b');
   assert.equal(sessionMessage.session.title, 'Сессия B');
@@ -137,9 +137,11 @@ test('переключение обратно восстанавливает и�
   sessions.switchTo('sess-a', 'Сессия A');
   await new Promise((resolve) => setImmediate(resolve));
 
-  const replaced = posts.find((message) => message.type === 'replaceMessages');
+  const replaced = posts.find((message) => message.type === 'replaceFeed');
   assert.deepEqual(
-    replaced.messages.map((message) => [message.role, message.text]),
+    replaced.records
+      .filter((record) => record.kind === 'message')
+      .map((record) => [record.message.role, record.message.text]),
     [
       ['user', 'сообщение A'],
       ['assistant', 'ответ']
@@ -203,7 +205,7 @@ test('начальная привязка: chatSession/composerDraft уходя�
   assert.ok(sessionMessage, 'chatSession отправлен в конструкторе');
   assert.equal(sessionMessage.session.sessionId, 'sess-a');
   assert.equal(sessionMessage.session.historyState, 'empty');
-  assert.ok(posts.some((message) => message.type === 'replaceMessages'));
+  assert.ok(posts.some((message) => message.type === 'replaceFeed'));
   assert.ok(posts.some((message) => message.type === 'composerDraft'));
 });
 
@@ -243,9 +245,11 @@ test('tool-события попадают в историю и восстана
   sessions.switchTo('sess-a');
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.ok(posts.some((message) => message.type === 'chatToolCall' && message.call.id === 'call-1'));
-  assert.ok(
-    posts.some((message) => message.type === 'chatToolResult' && message.result.callId === 'call-1')
+  const replaced = posts.find((message) => message.type === 'replaceFeed');
+  assert.deepEqual(
+    replaced.records.map((record) => record.kind),
+    ['message', 'toolCall', 'toolResult'],
+    'порядок user → tool.call → tool.result сохранён'
   );
   const sessionMessage = posts.find((message) => message.type === 'chatSession');
   assert.equal(sessionMessage.session.historyState, 'replayed');
@@ -295,5 +299,37 @@ test('«Повторить» переотправляет последний в�
   const starts = bridge.calls.filter((call) => call.method === 'turn.start');
   assert.equal(starts.length, 2);
   assert.equal(starts[1].params.input, 'вопрос');
+  assert.equal(
+    posts.filter((message) => message.type === 'message' && message.message.role === 'user').length,
+    0,
+    'retry не дублирует user-сообщение'
+  );
+  controller.dispose();
+});
+
+test('без активной сессии события с sessionId отбрасываются', async () => {
+  const bridge = createBridge();
+  const sessions = createSessions({ sessionId: null, title: null, status: 'idle' });
+  const { controller, posts } = createController(bridge, sessions);
+  posts.length = 0;
+
+  bridge.emit('token', { sessionId: 'sess-a', turnId: 't', text: 'чужое' });
+  bridge.emit('error', { sessionId: 'sess-a', message: 'чужая ошибка' });
+  assert.equal(posts.filter((message) => message.type === 'chatToken').length, 0);
+  assert.equal(posts.filter((message) => message.type === 'chatStatus').length, 0);
+  controller.dispose();
+});
+
+test('offline без локальной истории — historyState unavailable', async () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+  posts.length = 0;
+
+  sessions.setStatus('offline');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const sessionMessage = posts.filter((message) => message.type === 'chatSession').at(-1);
+  assert.equal(sessionMessage.session.historyState, 'unavailable');
   controller.dispose();
 });

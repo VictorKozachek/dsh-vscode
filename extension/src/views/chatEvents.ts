@@ -386,6 +386,19 @@ export class ChatController {
    * Сообщение сразу уходит в WebView, чтобы лента не «моргала».
    */
   async send(text: string): Promise<void> {
+    return this.#runTurn(text, true);
+  }
+
+  /** Переотправка последнего ввода без нового user-сообщения (retry). */
+  async resend(): Promise<void> {
+    const input = this.#lastInput;
+    if (input === null) {
+      return;
+    }
+    return this.#runTurn(input, false);
+  }
+
+  async #runTurn(text: string, appendUser: boolean): Promise<void> {
     const trimmed = text.trim();
     if (trimmed === '') {
       return;
@@ -398,12 +411,14 @@ export class ChatController {
     this.#lastInput = trimmed;
     this.#lastInputSessionId = sessionId;
 
-    this.#messageCounter += 1;
-    this.#transcript.appendUser(sessionId, trimmed);
-    this.#post({
-      type: 'message',
-      message: { id: `user-${String(this.#messageCounter)}`, role: 'user', text: trimmed }
-    });
+    if (appendUser) {
+      this.#messageCounter += 1;
+      this.#transcript.appendUser(sessionId, trimmed);
+      this.#post({
+        type: 'message',
+        message: { id: `user-${String(this.#messageCounter)}`, role: 'user', text: trimmed }
+      });
+    }
 
     try {
       const result = (await this.#bridge.request('turn.start', {
@@ -491,8 +506,7 @@ export class ChatController {
       this.#lastInputSessionId !== null &&
       this.#lastInputSessionId === this.#boundSessionId
     ) {
-      const input = this.#lastInput;
-      void this.send(input).catch((error: unknown) => {
+      void this.resend().catch((error: unknown) => {
         this.#log(
           `ChatController: повторный ход не удался: ${error instanceof Error ? error.message : String(error)}`
         );
@@ -519,7 +533,8 @@ export class ChatController {
       return true;
     }
     if (this.#boundSessionId === null) {
-      return true;
+      // Нет активной сессии — события с sessionId всё равно не наши.
+      return false;
     }
     // Строгая политика: у активной сессии события без sessionId не принимаем
     // (иначе ошибка чужой сессии протечёт в активный чат).
@@ -546,27 +561,29 @@ export class ChatController {
     }
     const records =
       snapshot.sessionId === null ? [] : this.#transcript.recordsFor(snapshot.sessionId);
-    const messages =
-      snapshot.sessionId === null ? [] : this.#transcript.messagesFor(snapshot.sessionId);
-    this.#post({ type: 'replaceMessages', messages: [...messages] });
-    for (const record of records) {
-      if (record.kind === 'toolCall') {
-        this.#post({
-          type: 'chatToolCall',
-          call: { id: record.callId, name: record.name, arguments: record.arguments }
-        });
-      } else if (record.kind === 'toolResult') {
-        this.#post({
-          type: 'chatToolResult',
+    this.#post({
+      type: 'replaceFeed',
+      records: records.map((record) => {
+        if (record.kind === 'message') {
+          return { kind: 'message', message: record.message } as const;
+        }
+        if (record.kind === 'toolCall') {
+          return {
+            kind: 'toolCall',
+            call: { id: record.callId, name: record.name, arguments: record.arguments }
+          } as const;
+        }
+        return {
+          kind: 'toolResult',
           result: {
             callId: record.callId,
             ok: record.ok,
             ...(record.result === undefined ? {} : { result: record.result }),
             ...(record.error === undefined ? {} : { error: record.error })
           }
-        });
-      }
-    }
+        } as const;
+      })
+    });
     this.#post({ type: 'chatSession', session: this.#sessionDto(snapshot) });
     this.#post({
       type: 'composerDraft',
@@ -581,13 +598,19 @@ export class ChatController {
   #sessionDto(snapshot: ChatSessionSnapshot): ChatSessionDto {
     const hasHistory =
       snapshot.sessionId !== null && this.#transcript.hasHistory(snapshot.sessionId);
+    const historyState =
+      snapshot.status === 'offline' && !hasHistory
+        ? 'unavailable'
+        : hasHistory
+          ? 'replayed'
+          : 'empty';
     return {
       sessionId: snapshot.sessionId,
       title: snapshot.title,
       model: snapshot.model ?? '',
       preset: snapshot.preset ?? 'standard',
       status: snapshot.status,
-      historyState: hasHistory ? 'replayed' : 'empty'
+      historyState
     };
   }
 

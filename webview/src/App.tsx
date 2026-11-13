@@ -110,6 +110,31 @@ export function App(): ReactElement {
           dispatch({ type: 'cancelled' });
           break;
         }
+        case 'replaceFeed': {
+          dispatch({
+            type: 'replaceFeed',
+            records: message.records.map((record) =>
+              record.kind === 'message'
+                ? { kind: 'message' as const, message: record.message }
+                : record.kind === 'toolCall'
+                  ? {
+                      kind: 'toolCall' as const,
+                      callId: record.call.id,
+                      name: record.call.name,
+                      arguments: record.call.arguments
+                    }
+                  : {
+                      kind: 'toolResult' as const,
+                      callId: record.result.callId,
+                      ok: record.result.ok,
+                      ...(record.result.error === undefined
+                        ? { result: record.result.result }
+                        : { error: record.result.error })
+                    }
+            )
+          });
+          break;
+        }
         case 'chatSession': {
           const previousId = activeSessionRef.current;
           const nextId = message.session.sessionId;
@@ -129,6 +154,7 @@ export function App(): ReactElement {
         }
         case 'composerDraft': {
           draftsRef.current.set(activeSessionRef.current, message.text);
+          draftRef.current = message.text;
           setDraft(message.text);
           break;
         }
@@ -142,7 +168,9 @@ export function App(): ReactElement {
   }, []);
 
   const send = useCallback(() => {
-    if (session?.sessionId === null || session === null) {
+    // Блокируем только явную сессию без id; при отсутствии chatSession —
+    // эхо-режим каркаса (#005), отправка должна работать.
+    if (session !== null && session.sessionId === null) {
       return;
     }
     const text = draft.trim();
