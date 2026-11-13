@@ -50,6 +50,13 @@
 | 015 | Терминал-мост и диагностика | 004 | `extension/src/terminal/`, `extension/src/diagnostics/` |
 | 016 | Визуализация субагентов | 008 | `webview/src/subagents/`, `extension/src/views/subagents*` |
 | 017 | VSIX, CI и документация | 001–016 | `.github/workflows/`, `docs/`, `extension/package.json` (VSIX) |
+| 018 | WorkspaceRegistry: не перезаписывать запись новой схемы | 003 | `extension/src/workspace/registry*` |
+| 019 | WorkspaceResolver: битый percent-encoding | 002 | `extension/src/workspace/resolver*` |
+| 020 | ContextLoader: дени-лист секретов | 006 | `extension/src/context/*` |
+| 021 | DSH runtime: headless-запуск и транспорт | 004 | `extension/src/bridge/*`, `protocol/*`, `docs/adr/` |
+| 022 | Sessions view: список сессий | 007, 021 | `extension/src/views/sessions*` |
+| 023 | New Session: пресет, модель, sandbox, approval | 007, 021 | `extension/src/views/newSession*`, `webview/src/newSession/` |
+| 024 | Чат, привязанный к выбранной сессии | 008, 022 | `extension/src/views/chat*`, `webview/src/chat/` |
 
 ## Критерии готовности задачи (Definition of Done)
 
@@ -74,6 +81,7 @@
 | 2026-11-09 | #006 ContextLoader дошла до ready уже после заморозки и слита; `main` зелёный (72+ теста). Долг #020 — расширить дени-лист секретов (.git-credentials/.pgpass/.htpasswd) |
 | 2026-11-09 | #008 потоковый чат слита (headless Chrome-проверка), `main` зелёный; #007 SessionManager на тестах; backlog #009–#020 |
 | 2026-11-09 | #007 SessionManager слита; вечерняя смена закрыта: слито 8 задач, очередь пуста и заморожена, `main` зелёный |
+| 2026-11-13 | Разморозка; выяснилось, что `dsh serve --protocol=jsonrpc` из спеки не существует, но в npm есть `@deepseek-ai/dsh` 0.2.2-rc.1 (bin `dsh`, `./profile-boot`). Заведены #021–#024 (рантайм → сессии → создание с пресетами → чат на сессию) и поставлены в приоритет по запросу пользователя; #010 уже был взят исполнителем, поэтому идёт перед #021 |
 
 
 ## Передача смены (конец дня 2026-11-09)
