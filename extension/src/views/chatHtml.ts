@@ -28,14 +28,36 @@ export interface ChatPanelStateDto {
   readonly locale: 'ru' | 'en';
 }
 
+/** Решение пользователя по approval-запросу. */
+export type ApprovalDecisionDto = 'allow' | 'allow-session' | 'deny';
+
+/** Запрос подтверждения инструмента для инлайн-карточки. */
+export interface ApprovalRequestMessage {
+  readonly id: string;
+  readonly tool: string;
+  readonly kind: 'read' | 'write' | 'execute' | 'network';
+  readonly targetPath?: string | undefined;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly sessionId: string;
+  readonly createdAt: string;
+}
+
 /** Сообщения WebView → extension. */
 export type WebviewMessage =
   | { readonly kind: 'ready' }
   | { readonly kind: 'stop' }
-  | { readonly kind: 'sendMessage'; readonly text: string };
+  | { readonly kind: 'sendMessage'; readonly text: string }
+  | { readonly kind: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionDto }
+  | { readonly kind: 'approvalShowDiff'; readonly id: string };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
-export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
+export const WEBVIEW_MESSAGE_TYPES = [
+  'ready',
+  'sendMessage',
+  'stop',
+  'approvalResolve',
+  'approvalShowDiff'
+] as const;
 
 /** Статус потока ответа в панели. */
 export type ChatStreamStatus = 'idle' | 'streaming' | 'cancelled' | 'error';
@@ -66,7 +88,9 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolCall',
   'chatToolResult',
   'chatDone',
-  'chatCancelled'
+  'chatCancelled',
+  'approvalRequest',
+  'approvalResolved'
 ] as const;
 
 /** Сообщения extension → WebView. */
@@ -80,7 +104,9 @@ export type ExtensionMessage =
   | { readonly type: 'chatToolCall'; readonly call: ChatToolCallDto }
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResultDto }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
-  | { readonly type: 'chatCancelled' };
+  | { readonly type: 'chatCancelled' }
+  | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
@@ -102,6 +128,18 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   if (type === 'sendMessage') {
     const text = typeof record['text'] === 'string' ? record['text'].trim() : '';
     return text === '' ? null : { kind: 'sendMessage', text };
+  }
+  if (type === 'approvalResolve') {
+    const id = typeof record['id'] === 'string' ? record['id'] : '';
+    const decision = record['decision'];
+    if (id === '' || (decision !== 'allow' && decision !== 'allow-session' && decision !== 'deny')) {
+      return null;
+    }
+    return { kind: 'approvalResolve', id, decision };
+  }
+  if (type === 'approvalShowDiff') {
+    const id = typeof record['id'] === 'string' ? record['id'] : '';
+    return id === '' ? null : { kind: 'approvalShowDiff', id };
   }
   return null;
 }
@@ -292,6 +330,11 @@ export class ChatSession {
     state: () => Omit<ChatPanelStateDto, 'status'>,
     emit: (message: ExtensionMessage) => void = () => undefined
   ): ExtensionMessage[] {
+    // Подтверждения обслуживает ApprovalBroker (#009), каркас их не трогает.
+    if (message.kind === 'approvalResolve' || message.kind === 'approvalShowDiff') {
+      return [];
+    }
+
     if (message.kind === 'ready') {
       const outgoing: ExtensionMessage[] = [
         { type: 'state', state: { ...state(), status: this.#status } }

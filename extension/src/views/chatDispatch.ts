@@ -18,6 +18,12 @@ export interface ChatDispatchSessionPort {
   ): ExtensionMessage[];
 }
 
+/** Порт брокера подтверждений (#009): решения из инлайн-карточки. */
+export interface ApprovalDispatchPort {
+  resolve(id: string, decision: 'allow' | 'allow-session' | 'deny'): boolean;
+  showDiff(id: string): boolean;
+}
+
 /** Зависимости диспетчера. */
 export interface ChatDispatchOptions {
   /** Потоковый чат (#008); без него — эхо-режим каркаса (#005). */
@@ -26,6 +32,8 @@ export interface ChatDispatchOptions {
   readonly state: () => Omit<ChatPanelStateDto, 'status'>;
   readonly post: (message: ExtensionMessage) => Promise<void> | void;
   readonly log?: ((line: string) => void) | undefined;
+  /** Брокер подтверждений (#009); без него approval-сообщения игнорируются. */
+  readonly approvals?: ApprovalDispatchPort | undefined;
 }
 
 /**
@@ -45,6 +53,19 @@ export async function dispatchWebviewMessage(
   const emit = (outgoing: ExtensionMessage): void => {
     void post(outgoing);
   };
+
+  // Инлайн-подтверждения (#009): решение из карточки уходит в брокер.
+  if (message.kind === 'approvalResolve') {
+    const handled = options.approvals?.resolve(message.id, message.decision) ?? false;
+    if (!handled) {
+      options.log?.(`панель DSH: approval-запрос ${message.id} уже не актуален`);
+    }
+    return;
+  }
+  if (message.kind === 'approvalShowDiff') {
+    options.approvals?.showDiff(message.id);
+    return;
+  }
 
   const chat = options.chat;
   if (chat !== undefined) {

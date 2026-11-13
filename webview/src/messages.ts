@@ -6,8 +6,28 @@
  * `tests/chat-view.test.mjs`.
  */
 
+/** Решение по approval-запросу. */
+export type ApprovalDecisionKind = 'allow' | 'allow-session' | 'deny';
+
+/** Запрос подтверждения инструмента. */
+export interface ApprovalRequestMessage {
+  readonly id: string;
+  readonly tool: string;
+  readonly kind: 'read' | 'write' | 'execute' | 'network';
+  readonly targetPath?: string | undefined;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly sessionId: string;
+  readonly createdAt: string;
+}
+
 /** Сообщения WebView → extension host. */
-export const WEBVIEW_MESSAGE_TYPES = ['ready', 'sendMessage', 'stop'] as const;
+export const WEBVIEW_MESSAGE_TYPES = [
+  'ready',
+  'sendMessage',
+  'stop',
+  'approvalResolve',
+  'approvalShowDiff'
+] as const;
 
 /** Сообщения extension host → WebView. */
 export const EXTENSION_MESSAGE_TYPES = [
@@ -20,7 +40,9 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolCall',
   'chatToolResult',
   'chatDone',
-  'chatCancelled'
+  'chatCancelled',
+  'approvalRequest',
+  'approvalResolved'
 ] as const;
 
 /** Статус потока ответа. */
@@ -67,7 +89,9 @@ export interface ChatPanelState {
 export type WebviewToExtension =
   | { readonly type: 'ready' }
   | { readonly type: 'sendMessage'; readonly text: string }
-  | { readonly type: 'stop' };
+  | { readonly type: 'stop' }
+  | { readonly type: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionKind }
+  | { readonly type: 'approvalShowDiff'; readonly id: string };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =
@@ -80,4 +104,6 @@ export type ExtensionToWebview =
   | { readonly type: 'chatToolCall'; readonly call: ChatToolCall }
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResult }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
-  | { readonly type: 'chatCancelled' };
+  | { readonly type: 'chatCancelled' }
+  | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionKind };

@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import type { ReactElement } from 'react';
 
+import { ApprovalCard } from './approvals/ApprovalCard';
+import type { ApprovalDecisionKind } from './approvals/approvalModel';
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
 import { PanelStatus } from './components/PanelStatus';
 import { createTranslator, resolveLocale } from './i18n';
-import type { ChatPanelState, ChatPanelStatus, ExtensionToWebview } from './messages';
+import type {
+  ApprovalRequestMessage,
+  ChatPanelState,
+  ChatPanelStatus,
+  ExtensionToWebview
+} from './messages';
 import { onExtensionMessage, postToExtension } from './vscodeApi';
 
 /**
@@ -25,6 +32,7 @@ export function App(): ReactElement {
   const [panel, setPanel] = useState<ChatPanelState | null>(null);
   const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
+  const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
 
   const t = useMemo(() => createTranslator(locale), [locale]);
 
@@ -100,6 +108,18 @@ export function App(): ReactElement {
           dispatch({ type: 'cancelled' });
           break;
         }
+        case 'approvalRequest': {
+          setApprovals((previous) =>
+            previous.some((item) => item.id === message.request.id)
+              ? previous
+              : [...previous, message.request]
+          );
+          break;
+        }
+        case 'approvalResolved': {
+          setApprovals((previous) => previous.filter((item) => item.id !== message.id));
+          break;
+        }
         default:
           break;
       }
@@ -120,6 +140,15 @@ export function App(): ReactElement {
 
   const stop = useCallback(() => {
     postToExtension({ type: 'stop' });
+  }, []);
+
+  const resolveApproval = useCallback((id: string, decision: ApprovalDecisionKind) => {
+    setApprovals((previous) => previous.filter((item) => item.id !== id));
+    postToExtension({ type: 'approvalResolve', id, decision });
+  }, []);
+
+  const showApprovalDiff = useCallback((id: string) => {
+    postToExtension({ type: 'approvalShowDiff', id });
   }, []);
 
   // Эхо-режим каркаса (без ChatController) шлёт chatStatus из ChatSession,
@@ -144,6 +173,15 @@ export function App(): ReactElement {
         onStop={stop}
       />
       <MessageList t={t} entries={feed.entries} />
+      {approvals.map((request) => (
+        <ApprovalCard
+          key={request.id}
+          t={t}
+          request={request}
+          onDecision={resolveApproval}
+          onShowDiff={showApprovalDiff}
+        />
+      ))}
       <Composer t={t} value={draft} onChange={setDraft} onSubmit={send} />
       <PanelStatus t={t} status={panelStatus} streamStatus={feed.status} error={feed.error} />
     </main>
