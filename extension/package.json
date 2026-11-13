@@ -91,6 +91,11 @@
           "default": "dsh",
           "description": "Путь к бинарю DSH (по умолчанию — `dsh` из PATH)."
         },
+        "dsh.profile": {
+          "type": "string",
+          "default": "acp",
+          "description": "Профиль DSH-рантайма: acp (automation-only JSON-RPC stdio) или web (HTTP GUI)."
+        },
         "dsh.autoStart": {
           "type": "boolean",
           "default": true,

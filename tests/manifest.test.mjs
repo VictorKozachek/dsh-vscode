@@ -34,6 +34,8 @@ const extraCommands = {
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */
 const expectedSettings = {
   'dsh.executablePath': { type: 'string', default: 'dsh' },
+  // Не из §9: профиль рантайма (#021), по умолчанию automation-only ACP.
+  'dsh.profile': { type: 'string', default: 'acp' },
   'dsh.autoStart': { type: 'boolean', default: true },
   'dsh.defaultModel': { type: 'string', default: 'deepseek-chat' },
   'dsh.sandboxMode': {
