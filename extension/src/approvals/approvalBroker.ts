@@ -39,6 +39,12 @@ export interface ApprovalUiPort {
   showDiff?(request: ApprovalRequestDto): void;
 }
 
+/** Результат пробы пути. */
+export type PathProbe =
+  | { readonly status: 'ok'; readonly realPath: string }
+  | { readonly status: 'missing' }
+  | { readonly status: 'blocked'; readonly reason: string };
+
 /** Порт журнала аудита. */
 export interface ApprovalAuditPort {
   record(entry: AuditEntry): Promise<void> | void;
@@ -55,7 +61,14 @@ export interface ApprovalBrokerOptions {
   readonly ui: ApprovalUiPort;
   readonly audit?: ApprovalAuditPort | undefined;
   readonly clock?: (() => Date) | undefined;
-  /** Резолв реального пути (symlink) перед проверкой границ. */
+  /**
+   * Проба пути перед проверкой границ: `ok` (реальный путь), `missing`
+   * (компонента/файла нет) или `blocked` (битая ссылка/ошибка lstat/realpath).
+   * `blocked` для write/execute — fail-closed. Прод-реализация —
+   * `createNodePathProbe()` (lstat + realpath).
+   */
+  readonly probePath?: ((absolutePath: string) => Promise<PathProbe>) | undefined;
+  /** Старый контракт: realpath-строка или null. Не видит битых ссылок. */
   readonly resolveRealPath?: ((absolutePath: string) => Promise<string | null>) | undefined;
   /** Колбэк settled-запроса: панель снимает карточку при решении вне WebView. */
   readonly onResolved?:
@@ -130,48 +143,6 @@ export class ApprovalBroker {
     return decision;
   }
 
-  /**
-   * Резолвит реальный путь (symlink) и проверяет границы.
-   *
-   * Для ещё не существующего файла `realpath` самого пути даёт `null`, поэтому
-   * резолвится ближайший существующий предок, а остаток приклеивается к нему:
-   * иначе `link/new.ts` (link → наружу) выглядел бы «внутри root». Если
-   * резолвер не подключён, вернул `null` или упал — `pathResolved: false`:
-   * политика для write/execute отвечает fail-closed.
-   */
-  async #withRealTargetPath(
-    input: ApprovalRequestInput
-  ): Promise<{ input: ApprovalRequestInput; pathResolved: boolean }> {
-    if (input.targetPath === undefined) {
-      return { input, pathResolved: false };
-    }
-    const absolutePath = path.isAbsolute(input.targetPath)
-      ? input.targetPath
-      : path.resolve(this.#options.context.workspaceRoot, input.targetPath);
-
-    if (this.#options.resolveRealPath === undefined) {
-      return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
-    }
-
-    let candidate = absolutePath;
-    const rest: string[] = [];
-    for (let depth = 0; depth < 64; depth += 1) {
-      const resolved = await this.#options.resolveRealPath(candidate).catch(() => null);
-      if (resolved !== null) {
-        const full = rest.length === 0 ? resolved : path.join(resolved, ...rest);
-        return { input: { ...input, targetPath: full }, pathResolved: true };
-      }
-      const parent = path.dirname(candidate);
-      if (parent === candidate) {
-        break;
-      }
-      rest.unshift(path.basename(candidate));
-      candidate = parent;
-    }
-
-    return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
-  }
-
   /** Решение из WebView (кнопки инлайн-карточки). Неизвестный id → `false`. */
   resolve(id: string, decision: ApprovalDecision): boolean {
     const pending = this.#pending.get(id);
@@ -205,6 +176,77 @@ export class ApprovalBroker {
   }
 
   // --- внутреннее ----------------------------------------------------------
+
+  /**
+   * Резолвит реальный путь (symlink) и проверяет границы.
+   *
+   * Для нового файла `realpath` самого пути даёт `missing`, поэтому ищется
+   * ближайший существующий предок, а остаток приклеивается. Если компонент
+   * существует, но не резолвится (битая symlink) или проба упала — `blocked`,
+   * и для write/execute политика отвечает fail-closed (`pathResolved: false`),
+   * а не отступает к предку. Отступление вверх — только при `missing`.
+   */
+  async #withRealTargetPath(
+    input: ApprovalRequestInput
+  ): Promise<{ input: ApprovalRequestInput; pathResolved: boolean }> {
+    if (input.targetPath === undefined) {
+      return { input, pathResolved: false };
+    }
+    const absolutePath = path.isAbsolute(input.targetPath)
+      ? input.targetPath
+      : path.resolve(this.#options.context.workspaceRoot, input.targetPath);
+
+    const probe = async (candidate: string): Promise<PathProbe> => {
+      if (this.#options.probePath !== undefined) {
+        return this.#options.probePath(candidate);
+      }
+      if (this.#options.resolveRealPath !== undefined) {
+        try {
+          const resolved = await this.#options.resolveRealPath(candidate);
+          return resolved === null ? { status: 'missing' } : { status: 'ok', realPath: resolved };
+        } catch (error) {
+          return {
+            status: 'blocked',
+            reason: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+      return { status: 'blocked', reason: 'резолвер пути не подключён' };
+    };
+
+    const target = await probe(absolutePath);
+    if (target.status === 'ok') {
+      return { input: { ...input, targetPath: target.realPath }, pathResolved: true };
+    }
+    if (target.status === 'blocked') {
+      this.#log(`Approvals: путь ${absolutePath} не резолвится: ${target.reason}`);
+      return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
+    }
+
+    let candidate = path.dirname(absolutePath);
+    const rest: string[] = [path.basename(absolutePath)];
+    for (let depth = 0; depth < 64; depth += 1) {
+      const ancestor = await probe(candidate);
+      if (ancestor.status === 'blocked') {
+        this.#log(`Approvals: предок ${candidate} не резолвится: ${ancestor.reason}`);
+        return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
+      }
+      if (ancestor.status === 'ok') {
+        return {
+          input: { ...input, targetPath: path.join(ancestor.realPath, ...rest) },
+          pathResolved: true
+        };
+      }
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        break;
+      }
+      rest.unshift(path.basename(candidate));
+      candidate = parent;
+    }
+
+    return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
+  }
 
   async #askUser(request: ApprovalRequestDto, reason: string | null): Promise<ApprovalDecision> {
     return new Promise<ApprovalDecision>((resolveDecision) => {
