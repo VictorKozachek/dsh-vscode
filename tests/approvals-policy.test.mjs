@@ -50,7 +50,8 @@ test('auto: запись внутри разрешена, вне воркспе�
 
   assert.deepEqual(evaluateApproval(request({ targetPath: 'src/app.ts' }), ctx), {
     action: 'allow',
-    reason: null
+    reason: null,
+    mandatory: false
   });
   assert.equal(evaluateApproval(request({ targetPath: '/etc/passwd' }), ctx).action, 'ask');
   assert.match(evaluateApproval(request({ targetPath: '/etc/passwd' }), ctx).reason, /вне воркспейса/);
@@ -83,6 +84,26 @@ test('sandbox read-only запрещает запись и запуск кома
   assert.match(evaluateApproval(request({ targetPath: 'a.ts' }), ctx).reason, /read-only/);
   assert.equal(evaluateApproval(request({ kind: 'execute' }), ctx).action, 'deny');
   assert.equal(evaluateApproval(request({ kind: 'read' }), ctx).action, 'allow');
+
+  // Sandbox-запрет сильнее обязательного подтверждения: запись вне root тоже deny,
+  // а не ask — разрешить её через диалог нельзя.
+  assert.equal(
+    evaluateApproval(request({ targetPath: '/tmp/evil.ts' }), ctx).action,
+    'deny'
+  );
+  assert.equal(
+    evaluateApproval(request({ targetPath: '/tmp/evil.ts' }), context({ sandboxMode: 'read-only', policy: 'ask' })).action,
+    'deny'
+  );
+});
+
+test('запись без targetPath не считается записью внутри воркспейса', () => {
+  const auto = evaluateApproval(request({ targetPath: undefined }), context({ policy: 'auto' }));
+  assert.equal(auto.action, 'ask');
+  assert.match(auto.reason, /без указания пути|вне воркспейса/);
+
+  const never = evaluateApproval(request({ targetPath: undefined }), context({ policy: 'never' }));
+  assert.equal(never.action, 'deny');
 });
 
 test('политика per-tool переопределяет общую', () => {

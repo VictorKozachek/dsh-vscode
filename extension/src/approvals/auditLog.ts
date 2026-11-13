@@ -13,7 +13,7 @@ import path from 'node:path';
 import type { ApprovalDecision, ToolKind } from './approvalPolicy';
 
 /** Откуда взялось решение. */
-export type AuditSource = 'policy' | 'user' | 'dispose' | 'timeout';
+export type AuditSource = 'policy' | 'user' | 'session' | 'dispose' | 'timeout';
 
 /** Одна запись аудита. */
 export interface AuditEntry {
@@ -51,7 +51,9 @@ export function sanitizeForAudit(value: unknown, depth = 0): unknown {
     return '[too deep]';
   }
   if (typeof value === 'string') {
-    return value.replace(/(\/\/)[^/@\s]+@/g, '$1');
+    // userinfo из URL и query-строка (там часто оказываются токены) не пишутся.
+    const withoutCredentials = value.replace(/(\/\/)[^/@\s]+@/g, '$1');
+    return withoutCredentials.replace(/\?[^\s#]*/g, '');
   }
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeForAudit(item, depth + 1));
@@ -111,10 +113,10 @@ export class AuditLog {
       source: entry.source
     };
     if (entry.targetPath !== undefined) {
-      normalized['targetPath'] = entry.targetPath;
+      normalized['targetPath'] = sanitizeForAudit(entry.targetPath);
     }
     if (entry.reason !== undefined && entry.reason !== null) {
-      normalized['reason'] = entry.reason;
+      normalized['reason'] = sanitizeForAudit(entry.reason);
     }
     if (entry.arguments !== undefined) {
       normalized['arguments'] = sanitizeForAudit(entry.arguments);

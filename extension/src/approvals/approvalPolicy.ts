@@ -56,6 +56,11 @@ export interface ApprovalContext {
 export interface ApprovalEvaluation {
   readonly action: ApprovalAction;
   readonly reason: string | null;
+  /**
+   * Подтверждение обязательно (вне воркспейса, сеть, неизвестный путь):
+   * «разрешить для сессии» и `auto` его не снимают.
+   */
+  readonly mandatory: boolean;
 }
 
 /** Значения sandbox-режимов. */
@@ -97,51 +102,58 @@ export function evaluateApproval(
   context: ApprovalContext
 ): ApprovalEvaluation {
   const effectivePolicy = context.toolPolicies?.[request.tool] ?? context.policy;
-  const insideWorkspace = isPathInsideWorkspace(
-    request.targetPath ?? context.workspaceRoot,
-    context.workspaceRoot
-  );
+  // Запись без пути считается «вне воркспейса»: проверить нечего, доверять нельзя.
+  const hasTargetPath = request.targetPath !== undefined && request.targetPath !== '';
+  const insideWorkspace = hasTargetPath
+    ? isPathInsideWorkspace(request.targetPath ?? '', context.workspaceRoot)
+    : false;
 
-  // Обязательные подтверждения: политика `auto` их не снимает.
-  const mandatoryReason =
-    request.kind === 'network'
-      ? 'сетевой вызов'
-      : request.kind === 'write' && !insideWorkspace
-        ? 'запись вне воркспейса'
-        : null;
-
-  if (mandatoryReason !== null) {
-    if (effectivePolicy === 'never') {
-      return {
-        action: 'deny',
-        reason: `${mandatoryReason}: политика «never» запрещает подтверждаемые операции`
-      };
-    }
-    return { action: 'ask', reason: mandatoryReason };
-  }
-
+  // Sandbox-запрет сильнее политики и обязательных подтверждений: в read-only
+  // запись/команда запрещены, и разрешить их через ask нельзя.
   if (
     !sandboxAllowsWrites(context.sandboxMode) &&
     (request.kind === 'write' || request.kind === 'execute')
   ) {
     return {
       action: 'deny',
-      reason: `sandbox «${context.sandboxMode}» запрещает ${request.kind}`
+      reason: `sandbox «${context.sandboxMode}» запрещает ${request.kind}`,
+      mandatory: false
     };
   }
 
+  // Обязательные подтверждения: политика `auto` их не снимает.
+  const mandatoryReason =
+    request.kind === 'network'
+      ? 'сетевой вызов'
+      : request.kind === 'write' && !insideWorkspace
+        ? hasTargetPath
+          ? 'запись вне воркспейса'
+          : 'запись без указания пути'
+        : null;
+
+  if (mandatoryReason !== null) {
+    if (effectivePolicy === 'never') {
+      return {
+        action: 'deny',
+        reason: `${mandatoryReason}: политика «never» запрещает подтверждаемые операции`,
+        mandatory: true
+      };
+    }
+    return { action: 'ask', reason: mandatoryReason, mandatory: true };
+  }
+
   if (request.kind === 'read') {
-    return { action: 'allow', reason: null };
+    return { action: 'allow', reason: null, mandatory: false };
   }
 
   switch (effectivePolicy) {
     case 'auto':
-      return { action: 'allow', reason: null };
+      return { action: 'allow', reason: null, mandatory: false };
     case 'ask':
-      return { action: 'ask', reason: `политика «ask» для ${request.tool}` };
+      return { action: 'ask', reason: `политика «ask» для ${request.tool}`, mandatory: false };
     case 'never':
-      return { action: 'deny', reason: `политика «never» для ${request.tool}` };
+      return { action: 'deny', reason: `политика «never» для ${request.tool}`, mandatory: false };
     default:
-      return { action: 'ask', reason: `неизвестная политика для ${request.tool}` };
+      return { action: 'ask', reason: `неизвестная политика для ${request.tool}`, mandatory: false };
   }
 }

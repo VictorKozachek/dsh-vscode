@@ -9,6 +9,8 @@
  * (`tests/approval-broker.test.mjs`).
  */
 
+import path from 'node:path';
+
 import type {
   ApprovalContext,
   ApprovalDecision,
@@ -53,6 +55,13 @@ export interface ApprovalBrokerOptions {
   readonly ui: ApprovalUiPort;
   readonly audit?: ApprovalAuditPort | undefined;
   readonly clock?: (() => Date) | undefined;
+  /** Резолв реального пути (symlink) перед проверкой границ. */
+  readonly resolveRealPath?: ((absolutePath: string) => Promise<string | null>) | undefined;
+  /** Колбэк settled-запроса: панель снимает карточку при решении вне WebView. */
+  readonly onResolved?:
+    | ((request: ApprovalRequestDto, decision: ApprovalDecision) => void)
+    | undefined;
+  readonly logger?: ((line: string) => void) | undefined;
 }
 
 interface PendingApproval {
@@ -89,24 +98,47 @@ export class ApprovalBroker {
     if (this.#disposed) {
       return 'deny';
     }
-    if (this.isSessionAllowed(input.sessionId, input.tool)) {
-      await this.#audit(input, 'allow', 'policy', 'разрешено для сессии');
-      return 'allow';
-    }
 
-    const evaluation = this.#options.evaluate(input, this.#options.context);
+    // Политика и sandbox проверяются ДО «разрешить для сессии»: сессионное
+    // разрешение сокращает только обычный ask и не обходит обязательные
+    // подтверждения (вне воркспейса, сеть) и запреты (never, read-only).
+    const evaluatedInput = await this.#withRealTargetPath(input);
+    const evaluation = this.#options.evaluate(evaluatedInput, this.#options.context);
+
     if (evaluation.action === 'allow') {
-      await this.#audit(input, 'allow', 'policy', evaluation.reason);
+      await this.#audit(evaluatedInput, 'allow', 'policy', evaluation.reason);
       return 'allow';
     }
     if (evaluation.action === 'deny') {
-      await this.#audit(input, 'deny', 'policy', evaluation.reason);
+      await this.#audit(evaluatedInput, 'deny', 'policy', evaluation.reason);
       return 'deny';
     }
 
-    const request = this.#toDto(input);
+    // Сессионное разрешение сокращает только обычный ask: обязательные
+    // подтверждения (вне воркспейса, сеть, неизвестный путь) спрашиваются снова.
+    if (!evaluation.mandatory && this.isSessionAllowed(input.sessionId, input.tool)) {
+      await this.#audit(evaluatedInput, 'allow', 'session', 'разрешено для сессии');
+      return 'allow';
+    }
+
+    const request = this.#toDto(evaluatedInput);
     const decision = await this.#askUser(request, evaluation.reason);
     return decision;
+  }
+
+  /** Подменяет targetPath реальным путём (symlink), если резолвер подключён. */
+  async #withRealTargetPath(input: ApprovalRequestInput): Promise<ApprovalRequestInput> {
+    if (this.#options.resolveRealPath === undefined || input.targetPath === undefined) {
+      return input;
+    }
+    const absolutePath = path.isAbsolute(input.targetPath)
+      ? input.targetPath
+      : path.resolve(this.#options.context.workspaceRoot, input.targetPath);
+    const resolved = await this.#options.resolveRealPath(absolutePath).catch(() => null);
+    if (resolved === null) {
+      return { ...input, targetPath: absolutePath };
+    }
+    return { ...input, targetPath: resolved };
   }
 
   /** Решение из WebView (кнопки инлайн-карточки). Неизвестный id → `false`. */
@@ -155,7 +187,7 @@ export class ApprovalBroker {
         if (decision === 'allow-session') {
           this.#sessionAllowed.add(sessionKey(request.sessionId, request.tool));
         }
-        void this.#options.audit?.record({
+        void this.#record({
           timestamp: this.#now(),
           sessionId: request.sessionId,
           tool: request.tool,
@@ -166,6 +198,11 @@ export class ApprovalBroker {
           source,
           reason: settleReason ?? reason
         });
+        try {
+          this.#options.onResolved?.(request, decision);
+        } catch (error) {
+          this.#log(`ApprovalBroker: onResolved упал: ${describeError(error)}`);
+        }
         resolveDecision(decision);
       };
 
@@ -212,7 +249,7 @@ export class ApprovalBroker {
     source: AuditSource,
     reason: string | null
   ): Promise<void> {
-    await this.#options.audit?.record({
+    await this.#record({
       timestamp: this.#now(),
       sessionId: input.sessionId,
       tool: input.tool,
@@ -225,9 +262,26 @@ export class ApprovalBroker {
     });
   }
 
+  /** Аудит не должен ломать решение: ошибки записи логируются. */
+  async #record(entry: AuditEntry): Promise<void> {
+    try {
+      await this.#options.audit?.record(entry);
+    } catch (error) {
+      this.#log(`ApprovalBroker: не удалось записать аудит: ${describeError(error)}`);
+    }
+  }
+
+  #log(line: string): void {
+    this.#options.logger?.(line);
+  }
+
   #now(): string {
     return (this.#options.clock ?? (() => new Date()))().toISOString();
   }
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sessionKey(sessionId: string, tool: string): string {

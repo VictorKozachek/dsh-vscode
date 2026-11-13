@@ -94,6 +94,28 @@ test('аудит: ротация по размеру и ограничение �
   await assert.rejects(() => readFile(`${log.filePath}.3`, 'utf8'));
 });
 
+test('аудит: query-токены и секреты в reason/targetPath не пишутся', async () => {
+  const log = new AuditLog({ filePath: filePath('query-secrets') });
+
+  await log.record(
+    entry({
+      targetPath: 'src/app.ts?token=SECRET-PATH',
+      reason: 'не удалось открыть https://example.com/x?token=SECRET-REASON',
+      arguments: { url: 'https://example.com/path?access_token=SECRET-ARG' }
+    })
+  );
+
+  const text = await readFile(log.filePath, 'utf8');
+  assert.ok(!text.includes('SECRET-PATH'));
+  assert.ok(!text.includes('SECRET-REASON'));
+  assert.ok(!text.includes('SECRET-ARG'));
+
+  const [record] = await readLines(log.filePath);
+  assert.equal(record.targetPath, 'src/app.ts');
+  assert.equal(record.reason, 'не удалось открыть https://example.com/x');
+  assert.equal(record.arguments.url, 'https://example.com/path');
+});
+
 test('sanitizeForAudit: вырезает секретные ключи и креденшелы рекурсивно', () => {
   const sanitized = sanitizeForAudit({
     authorization: 'Bearer x',
