@@ -123,3 +123,14 @@ test('запись вне воркспейса требует подтвержд
   const never = evaluateApproval(request({ targetPath: '/tmp/outside.ts' }), context({ policy: 'never' }));
   assert.equal(never.action, 'deny');
 });
+
+test('pathResolved=false: запись/команда fail-closed (ask), чтение не страдает', () => {
+  const auto = { ...context({ policy: 'auto' }), pathResolved: false };
+  assert.equal(evaluateApproval(request({ targetPath: 'a.ts' }), auto).action, 'ask');
+  assert.match(evaluateApproval(request({ targetPath: 'a.ts' }), auto).reason, /реальный путь/);
+  assert.equal(evaluateApproval(request({ kind: 'execute', tool: 'run' }), auto).action, 'ask');
+  assert.equal(evaluateApproval(request({ kind: 'read', tool: 'read_file' }), auto).action, 'allow');
+
+  const never = { ...context({ policy: 'never' }), pathResolved: false };
+  assert.equal(evaluateApproval(request({ targetPath: 'a.ts' }), never).action, 'deny');
+});

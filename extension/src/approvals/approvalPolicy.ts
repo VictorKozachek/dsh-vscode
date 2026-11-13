@@ -50,6 +50,13 @@ export interface ApprovalContext {
   readonly policy: ApprovalPolicy;
   /** Переопределения политики по имени инструмента. */
   readonly toolPolicies?: Readonly<Record<string, ApprovalPolicy>> | undefined;
+  /**
+   * Удалось ли резолвить реальный путь (symlink) перед проверкой.
+   * `false` для write/execute — fail-closed: обязательное подтверждение, даже
+   * если строковая проверка говорит «внутри». Не задано — строковая проверка
+   * (прямые вызовы/тесты); брокер всегда выставляет значение.
+   */
+  readonly pathResolved?: boolean | undefined;
 }
 
 /** Результат проверки политики. */
@@ -86,8 +93,14 @@ export function sandboxAllowsWrites(mode: SandboxMode): boolean {
 }
 
 /**
- * Лежит ли путь внутри воркспейса (после `path.resolve`). Путь может быть
- * относительным — считается от корня воркспейса.
+ * ЛЕКСИЧЕСКАЯ проверка «путь внутри воркспейса» (после `path.resolve`).
+ *
+ * Сама по себе не защищает от симлинков: границу обеспечивает
+ * `ApprovalBroker`, резолвя реальный путь (включая ближайшего существующего
+ * предка для новых файлов) и выставляя `context.pathResolved`. Если резолвер
+ * недоступен/упал — политика для write/execute отвечает `ask` (fail-closed),
+ * а не `allow`. Прямое использование этой функции — только предварительная
+ * проверка, не решение о доступе.
  */
 export function isPathInsideWorkspace(targetPath: string, workspaceRoot: string): boolean {
   const root = path.resolve(workspaceRoot);
@@ -121,9 +134,15 @@ export function evaluateApproval(
     };
   }
 
+  // Строговая проверка не видит symlink: без realpath запись/команда —
+  // fail-closed (обязательное подтверждение), даже если путь выглядит внутри.
+  const unresolvedPath =
+    (request.kind === 'write' || request.kind === 'execute') && context.pathResolved === false;
+
   // Обязательные подтверждения: политика `auto` их не снимает.
-  const mandatoryReason =
-    request.kind === 'network'
+  const mandatoryReason = unresolvedPath
+    ? 'не удалось проверить реальный путь (symlink)'
+    : request.kind === 'network'
       ? 'сетевой вызов'
       : request.kind === 'write' && !insideWorkspace
         ? hasTargetPath

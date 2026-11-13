@@ -51,9 +51,18 @@ export function sanitizeForAudit(value: unknown, depth = 0): unknown {
     return '[too deep]';
   }
   if (typeof value === 'string') {
-    // userinfo из URL и query-строка (там часто оказываются токены) не пишутся.
+    // userinfo из URL не пишется; query вырезается только у URL-подобных строк,
+    // а в произвольном тексте (например, reason) чистятся лишь секретные
+    // query-параметры — обычный «?» не теряет хвост.
     const withoutCredentials = value.replace(/(\/\/)[^/@\s]+@/g, '$1');
-    return withoutCredentials.replace(/\?[^\s#]*/g, '');
+    const withoutUrlQuery = withoutCredentials.replace(
+      /([a-z][a-z0-9+.-]*:\/\/[^\s?#]*)\?[^\s#]*/gi,
+      '$1'
+    );
+    return withoutUrlQuery.replace(
+      /([?&](?:token|access_token|api_key|key|secret)=)[^&\s]+/gi,
+      '$1[redacted]'
+    );
   }
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeForAudit(item, depth + 1));

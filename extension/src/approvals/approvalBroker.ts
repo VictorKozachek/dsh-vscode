@@ -102,8 +102,12 @@ export class ApprovalBroker {
     // Политика и sandbox проверяются ДО «разрешить для сессии»: сессионное
     // разрешение сокращает только обычный ask и не обходит обязательные
     // подтверждения (вне воркспейса, сеть) и запреты (never, read-only).
-    const evaluatedInput = await this.#withRealTargetPath(input);
-    const evaluation = this.#options.evaluate(evaluatedInput, this.#options.context);
+    const resolved = await this.#withRealTargetPath(input);
+    const evaluatedInput = resolved.input;
+    const evaluation = this.#options.evaluate(evaluatedInput, {
+      ...this.#options.context,
+      pathResolved: resolved.pathResolved
+    });
 
     if (evaluation.action === 'allow') {
       await this.#audit(evaluatedInput, 'allow', 'policy', evaluation.reason);
@@ -126,19 +130,46 @@ export class ApprovalBroker {
     return decision;
   }
 
-  /** Подменяет targetPath реальным путём (symlink), если резолвер подключён. */
-  async #withRealTargetPath(input: ApprovalRequestInput): Promise<ApprovalRequestInput> {
-    if (this.#options.resolveRealPath === undefined || input.targetPath === undefined) {
-      return input;
+  /**
+   * Резолвит реальный путь (symlink) и проверяет границы.
+   *
+   * Для ещё не существующего файла `realpath` самого пути даёт `null`, поэтому
+   * резолвится ближайший существующий предок, а остаток приклеивается к нему:
+   * иначе `link/new.ts` (link → наружу) выглядел бы «внутри root». Если
+   * резолвер не подключён, вернул `null` или упал — `pathResolved: false`:
+   * политика для write/execute отвечает fail-closed.
+   */
+  async #withRealTargetPath(
+    input: ApprovalRequestInput
+  ): Promise<{ input: ApprovalRequestInput; pathResolved: boolean }> {
+    if (input.targetPath === undefined) {
+      return { input, pathResolved: false };
     }
     const absolutePath = path.isAbsolute(input.targetPath)
       ? input.targetPath
       : path.resolve(this.#options.context.workspaceRoot, input.targetPath);
-    const resolved = await this.#options.resolveRealPath(absolutePath).catch(() => null);
-    if (resolved === null) {
-      return { ...input, targetPath: absolutePath };
+
+    if (this.#options.resolveRealPath === undefined) {
+      return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
     }
-    return { ...input, targetPath: resolved };
+
+    let candidate = absolutePath;
+    const rest: string[] = [];
+    for (let depth = 0; depth < 64; depth += 1) {
+      const resolved = await this.#options.resolveRealPath(candidate).catch(() => null);
+      if (resolved !== null) {
+        const full = rest.length === 0 ? resolved : path.join(resolved, ...rest);
+        return { input: { ...input, targetPath: full }, pathResolved: true };
+      }
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        break;
+      }
+      rest.unshift(path.basename(candidate));
+      candidate = parent;
+    }
+
+    return { input: { ...input, targetPath: absolutePath }, pathResolved: false };
   }
 
   /** Решение из WebView (кнопки инлайн-карточки). Неизвестный id → `false`. */

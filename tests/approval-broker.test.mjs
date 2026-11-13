@@ -42,7 +42,8 @@ function makeBroker({
       }
     },
     clock: () => new Date(NOW),
-    resolveRealPath,
+    // По умолчанию «путь уже реальный»: тесты политики не про symlink.
+    resolveRealPath: resolveRealPath ?? (async (absolutePath) => absolutePath),
     onResolved,
     logger
   });
@@ -304,5 +305,59 @@ test('ошибка записи аудита не ломает решение и
   assert.equal(await broker.request(writeRequest({ id: 'a' })), 'allow');
   await tick();
   assert.ok(logs.some((line) => line.includes('аудит')));
+  broker.dispose();
+});
+
+test('symlink-граница: новый файл под symlink наружу — обязательное подтверждение', async () => {
+  const { broker } = makeBroker({
+    policy: 'auto',
+    ui: { ask: () => Promise.resolve('deny') },
+    resolveRealPath: async (absolutePath) => {
+      // Реального файла ещё нет; ближайший существующий предок link → outside.
+      if (absolutePath.endsWith('/link/new.ts')) {
+        return null;
+      }
+      if (absolutePath.endsWith('/link')) {
+        return '/outside';
+      }
+      return absolutePath;
+    }
+  });
+
+  const decision = await broker.request(
+    writeRequest({ id: 'req_link_new', targetPath: 'link/new.ts' })
+  );
+  assert.equal(decision, 'deny', 'после realpath путь вне root — обязательный ask');
+  broker.dispose();
+});
+
+test('fail-closed: без резолвера, при null и при ошибке запись не авто-разрешается', async () => {
+  for (const [name, resolveRealPath] of [
+    ['нет резолвера', undefined],
+    ['null', async () => null],
+    ['ошибка', async () => Promise.reject(new Error('EACCES'))]
+  ]) {
+    const { broker } = makeBroker({
+      policy: 'auto',
+      ui: { ask: () => Promise.resolve('deny') },
+      resolveRealPath
+    });
+    const decision = await broker.request(
+      writeRequest({ id: `req_${name}`, targetPath: '/repo/src/app.ts' })
+    );
+    assert.equal(decision, 'deny', `${name}: должен быть спрошен пользователь`);
+    broker.dispose();
+  }
+});
+
+test('resolved-путь внутри root при auto разрешается как раньше', async () => {
+  const { broker } = makeBroker({
+    policy: 'auto',
+    resolveRealPath: async (absolutePath) => absolutePath
+  });
+  assert.equal(
+    await broker.request(writeRequest({ id: 'req_inside', targetPath: `${ROOT}/src/a.ts` })),
+    'allow'
+  );
   broker.dispose();
 });

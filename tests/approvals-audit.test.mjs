@@ -111,9 +111,20 @@ test('аудит: query-токены и секреты в reason/targetPath не
   assert.ok(!text.includes('SECRET-ARG'));
 
   const [record] = await readLines(log.filePath);
-  assert.equal(record.targetPath, 'src/app.ts');
+  assert.equal(record.targetPath, 'src/app.ts?token=[redacted]', 'query-параметр замаскирован');
   assert.equal(record.reason, 'не удалось открыть https://example.com/x');
   assert.equal(record.arguments.url, 'https://example.com/path');
+});
+
+test('sanitizeForAudit: обычный вопросительный знак не режет текст', () => {
+  assert.equal(
+    sanitizeForAudit('сессия не найдена? создаю новую'),
+    'сессия не найдена? создаю новую'
+  );
+  assert.equal(
+    sanitizeForAudit('https://example.com/path?x=1&token=SECRET'),
+    'https://example.com/path'
+  );
 });
 
 test('sanitizeForAudit: вырезает секретные ключи и креденшелы рекурсивно', () => {
