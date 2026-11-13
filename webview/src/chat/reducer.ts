@@ -81,6 +81,32 @@ export type ChatFeedEvent =
         readonly role: 'user' | 'assistant' | 'system';
         readonly text: string;
       }[];
+    }
+  | {
+      readonly type: 'replaceFeed';
+      readonly records: readonly (
+        | {
+            readonly kind: 'message';
+            readonly message: {
+              readonly id: string;
+              readonly role: 'user' | 'assistant' | 'system';
+              readonly text: string;
+            };
+          }
+        | {
+            readonly kind: 'toolCall';
+            readonly callId: string;
+            readonly name: string;
+            readonly arguments: Record<string, unknown>;
+          }
+        | {
+            readonly kind: 'toolResult';
+            readonly callId: string;
+            readonly ok: boolean;
+            readonly result?: unknown;
+            readonly error?: string;
+          }
+      )[];
     };
 
 /** Начальное состояние. */
@@ -119,6 +145,64 @@ export function chatFeedReducer(state: ChatFeedState, event: ChatFeedEvent): Cha
         turnId: null,
         error: null
       };
+    }
+
+    case 'replaceFeed': {
+      const entries: ChatEntryState[] = [];
+      for (const record of event.records) {
+        if (record.kind === 'message') {
+          entries.push({
+            id: record.message.id,
+            role: record.message.role,
+            text: record.message.text,
+            toolCalls: [],
+            state: 'done'
+          });
+          continue;
+        }
+        if (record.kind === 'toolCall') {
+          const call: ToolCallState = {
+            id: record.callId,
+            name: record.name,
+            arguments: record.arguments,
+            status: 'running',
+            startedAt: 0
+          };
+          const last = entries[entries.length - 1];
+          if (last !== undefined && last.role === 'assistant') {
+            entries[entries.length - 1] = { ...last, toolCalls: [...last.toolCalls, call] };
+          } else {
+            entries.push({
+              id: `assistant-${String(entries.length + 1)}`,
+              role: 'assistant',
+              text: '',
+              toolCalls: [call],
+              state: 'done'
+            });
+          }
+          continue;
+        }
+        for (let index = 0; index < entries.length; index += 1) {
+          const entry = entries[index];
+          if (entry === undefined || !entry.toolCalls.some((call) => call.id === record.callId)) {
+            continue;
+          }
+          entries[index] = {
+            ...entry,
+            toolCalls: entry.toolCalls.map((call) =>
+              call.id === record.callId
+                ? {
+                    ...call,
+                    status: record.ok ? ('done' as const) : ('error' as const),
+                    finishedAt: 0,
+                    ...(record.error === undefined ? { result: record.result } : { error: record.error })
+                  }
+                : call
+            )
+          };
+        }
+      }
+      return { ...state, entries, status: 'idle', turnId: null, error: null };
     }
 
     case 'appendMessage': {
