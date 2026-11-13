@@ -4,6 +4,8 @@ import { ChatViewProvider } from './views/chatViewProvider';
 import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
+import { registerWorkspaceLifecycle } from './workspace/lifecycleController';
+import type { LifecycleState } from './workspace/lifecycle';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -105,6 +107,18 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
   );
 
+  // Lifecycle воркспейса (#011): смена папки переключает контекст и сессии с
+  // grace period; статус-бар показывает состояние.
+  context.subscriptions.push(
+    registerWorkspaceLifecycle({
+      context,
+      log: (line) => {
+        log.appendLine(line);
+      },
+      onStatus: (state) => updateStatusBar(state)
+    })
+  );
+
   const chatView = new ChatViewProvider({
     extensionUri: context.extensionUri,
     state: () => currentPanelState(),
@@ -158,11 +172,21 @@ function workspaceName(): string {
   return vscode.workspace.name ?? 'no workspace';
 }
 
-function updateStatusBar(): void {
+/** Подпись состояния lifecycle для статус-бара. */
+const LIFECYCLE_LABELS: Readonly<Record<LifecycleState, string>> = {
+  resolving: 'resolving',
+  'loading-context': 'loading context',
+  ready: 'ready',
+  paused: 'paused',
+  teardown: 'idle'
+};
+
+function updateStatusBar(state?: LifecycleState): void {
   if (statusBarItem === undefined) {
     return;
   }
-  statusBarItem.text = `DSH · ${workspaceName()} · idle`;
+  const label = state === undefined ? 'idle' : LIFECYCLE_LABELS[state];
+  statusBarItem.text = `DSH · ${workspaceName()} · ${label}`;
   statusBarItem.show();
 }
 

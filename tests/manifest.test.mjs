@@ -51,6 +51,8 @@ const expectedSettings = {
   'dsh.workspace.registryPath': { type: 'string', default: '~/.dsh/workspaces' },
   // Не из §9: срок хранения записей реестра воркспейсов (#003), 90 дней.
   'dsh.workspace.keepDays': { type: 'number', default: 90 },
+  // Не из §9: grace period смены папки (#011), 10 минут.
+  'dsh.workspace.graceMinutes': { type: 'number', default: 10 },
   'dsh.kanban.enabled': { type: 'boolean', default: false },
   'dsh.telemetry.enabled': { type: 'boolean', default: false }
 };
