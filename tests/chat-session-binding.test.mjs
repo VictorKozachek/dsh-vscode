@@ -115,7 +115,7 @@ test('переключение сессии: история, черновик и
   const sessionMessage = posts.find((message) => message.type === 'chatSession');
   assert.equal(sessionMessage.session.sessionId, 'sess-b');
   assert.equal(sessionMessage.session.title, 'Сессия B');
-  assert.equal(sessionMessage.session.historyReplayed, false);
+  assert.equal(sessionMessage.session.historyState, 'empty');
   const draft = posts.find((message) => message.type === 'composerDraft');
   assert.equal(draft.text, 'черновик B');
   assert.equal(controller.boundSessionId, 'sess-b');
@@ -146,7 +146,7 @@ test('переключение обратно восстанавливает и�
     ]
   );
   const sessionMessage = posts.find((message) => message.type === 'chatSession');
-  assert.equal(sessionMessage.session.historyReplayed, true);
+  assert.equal(sessionMessage.session.historyState, 'replayed');
   controller.dispose();
 });
 
@@ -191,5 +191,109 @@ test('черновик сохраняется за активной сессие
   controller.setDraft('для B');
   assert.equal(sessions.getDraft('sess-b'), 'для B');
   assert.equal(sessions.getDraft('sess-a'), 'недописанное');
+  controller.dispose();
+});
+
+test('начальная привязка: chatSession/composerDraft уходят сразу', () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { posts } = createController(bridge, sessions);
+
+  const sessionMessage = posts.find((message) => message.type === 'chatSession');
+  assert.ok(sessionMessage, 'chatSession отправлен в конструкторе');
+  assert.equal(sessionMessage.session.sessionId, 'sess-a');
+  assert.equal(sessionMessage.session.historyState, 'empty');
+  assert.ok(posts.some((message) => message.type === 'replaceMessages'));
+  assert.ok(posts.some((message) => message.type === 'composerDraft'));
+});
+
+test('события без sessionId при активной сессии отбрасываются', () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+  posts.length = 0;
+
+  bridge.emit('token', { turnId: 'turn-1', text: 'без сессии' });
+  bridge.emit('error', { message: 'чужая ошибка' });
+
+  assert.equal(posts.filter((message) => message.type === 'chatToken').length, 0);
+  assert.equal(posts.filter((message) => message.type === 'chatStatus').length, 0);
+  controller.dispose();
+});
+
+test('tool-события попадают в историю и восстанавливаются при переключении', async () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+
+  await controller.send('прочитай файл');
+  bridge.emit('tool.call', {
+    sessionId: 'sess-a',
+    callId: 'call-1',
+    name: 'read_file',
+    arguments: { path: 'a.ts' }
+  });
+  bridge.emit('tool.result', { sessionId: 'sess-a', callId: 'call-1', ok: true, result: { bytes: 1 } });
+  bridge.emit('turn.done', { sessionId: 'sess-a', turnId: 'turn-1', finishReason: 'stop' });
+
+  sessions.switchTo('sess-b');
+  await new Promise((resolve) => setImmediate(resolve));
+  posts.length = 0;
+
+  sessions.switchTo('sess-a');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(posts.some((message) => message.type === 'chatToolCall' && message.call.id === 'call-1'));
+  assert.ok(
+    posts.some((message) => message.type === 'chatToolResult' && message.result.callId === 'call-1')
+  );
+  const sessionMessage = posts.find((message) => message.type === 'chatSession');
+  assert.equal(sessionMessage.session.historyState, 'replayed');
+  controller.dispose();
+});
+
+test('смена сессии во время turn.start не оставляет streaming старой сессии', async () => {
+  let resolveStart;
+  const bridge = createBridge({
+    'turn.start': () =>
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      })
+  });
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+
+  const sending = controller.send('вопрос');
+  await new Promise((resolve) => setImmediate(resolve));
+  sessions.switchTo('sess-b');
+  await new Promise((resolve) => setImmediate(resolve));
+  const afterSwitch = posts.length;
+  resolveStart({ turnId: 'turn-old' });
+  await sending;
+
+  const statuses = posts
+    .slice(afterSwitch)
+    .filter((message) => message.type === 'chatStatus')
+    .map((message) => message.status);
+  assert.equal(statuses.includes('streaming'), false, 'streaming старой сессии не выставлен');
+  controller.dispose();
+});
+
+test('«Повторить» переотправляет последний ввод после ошибки', async () => {
+  const bridge = createBridge({
+    'turn.start': () => ({ turnId: 'turn-1' })
+  });
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+
+  await controller.send('вопрос');
+  bridge.emit('error', { sessionId: 'sess-a', message: 'обрыв' });
+  posts.length = 0;
+  controller.retry();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const starts = bridge.calls.filter((call) => call.method === 'turn.start');
+  assert.equal(starts.length, 2);
+  assert.equal(starts[1].params.input, 'вопрос');
   controller.dispose();
 });

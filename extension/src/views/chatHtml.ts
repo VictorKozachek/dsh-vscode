@@ -35,8 +35,11 @@ export interface ChatSessionDto {
   readonly model: string;
   readonly preset: string;
   readonly status: string;
-  /** История восстановлена из транскрипта (иначе чистый лист с пометкой). */
-  readonly historyReplayed: boolean;
+  /**
+   * Состояние истории: `replayed` — восстановлена из транскрипта,
+   * `empty` — сессия новая/пустая, `unavailable` — транскрипт недоступен.
+   */
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
 }
 
 /** Сообщения WebView → extension. */

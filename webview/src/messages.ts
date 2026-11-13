@@ -13,7 +13,7 @@ export interface ChatSessionDto {
   readonly model: string;
   readonly preset: string;
   readonly status: string;
-  readonly historyReplayed: boolean;
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
 }
 
 /** Сообщения WebView → extension host. */

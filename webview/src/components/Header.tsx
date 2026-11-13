@@ -14,6 +14,9 @@ export interface HeaderProps {
   readonly sessionTitle?: string | null | undefined;
   /** Статус сессии из рантайма. */
   readonly sessionStatus?: string | undefined;
+  /** Модель и пресет активной сессии (#024). */
+  readonly sessionModel?: string | undefined;
+  readonly sessionPreset?: string | undefined;
 }
 
 /** Шапка панели: имя воркспейса, модель, sandbox, кнопка «Стоп». */
@@ -25,7 +28,9 @@ export function Header({
   status,
   onStop,
   sessionTitle,
-  sessionStatus
+  sessionStatus,
+  sessionModel,
+  sessionPreset
 }: HeaderProps): ReactElement {
   return (
     <header className="dsh-header">
@@ -48,6 +53,8 @@ export function Header({
           <dd title={sessionTitle ?? undefined}>
             {sessionTitle ?? t('header.noSession')}
             {sessionStatus === undefined ? '' : ` · ${sessionStatus}`}
+            {sessionPreset === undefined || sessionPreset === '' ? '' : ` · ${sessionPreset}`}
+            {sessionModel === undefined || sessionModel === '' ? '' : ` · ${sessionModel}`}
           </dd>
         </div>
         <div className="dsh-header__meta-item">

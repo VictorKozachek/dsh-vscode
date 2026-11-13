@@ -90,6 +90,8 @@ export async function dispatchWebviewMessage(
           await post(outgoing);
         }
         await post({ type: 'chatStatus', status: chat.status });
+        // WebView готов: отдаём начальную привязку к сессии (#024).
+        chat.syncNow?.();
         return;
       }
     }

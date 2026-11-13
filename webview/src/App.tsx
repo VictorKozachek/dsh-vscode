@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import type { ReactElement } from 'react';
 
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
-import { DraftStore } from './chat/drafts';
+import { DraftStore, switchSessionDraft } from './chat/drafts';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
@@ -34,6 +34,7 @@ export function App(): ReactElement {
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
   const activeSessionRef = useRef<string | null>(null);
+  const draftRef = useRef('');
 
   const t = useMemo(() => createTranslator(locale), [locale]);
 
@@ -113,9 +114,15 @@ export function App(): ReactElement {
           const previousId = activeSessionRef.current;
           const nextId = message.session.sessionId;
           if (previousId !== nextId) {
-            draftsRef.current.set(previousId, draft);
+            const next = switchSessionDraft(
+              draftsRef.current,
+              previousId,
+              nextId,
+              draftRef.current
+            );
             activeSessionRef.current = nextId;
-            setDraft(draftsRef.current.get(nextId));
+            draftRef.current = next;
+            setDraft(next);
           }
           setSession(message.session);
           break;
@@ -142,6 +149,10 @@ export function App(): ReactElement {
     if (text === '') {
       return;
     }
+    draftsRef.current.set(activeSessionRef.current, '');
+    draftRef.current = '';
+    setDraft('');
+    postToExtension({ type: 'draftChanged', text: '' });
     postToExtension({ type: 'sendMessage', text });
     setDraft('');
   }, [draft]);
@@ -152,6 +163,7 @@ export function App(): ReactElement {
 
   const changeDraft = useCallback(
     (value: string) => {
+      draftRef.current = value;
       setDraft(value);
       draftsRef.current.set(activeSessionRef.current, value);
       postToExtension({ type: 'draftChanged', text: value });
@@ -189,16 +201,18 @@ export function App(): ReactElement {
         onStop={stop}
         sessionTitle={session?.title ?? null}
         sessionStatus={session?.status}
+        sessionModel={session?.model}
+        sessionPreset={session?.preset}
       />
-      {session !== null && session.status === 'error' ? (
+      {feed.status === 'error' || session?.status === 'error' || session?.status === 'offline' ? (
         <div className="dsh-banner" role="alert">
-          <span>{t('status.error')}</span>
+          <span>{feed.error ?? t('status.error')}</span>
           <button type="button" className="dsh-button" onClick={retryChat}>
             {t('chat.retry')}
           </button>
         </div>
       ) : null}
-      {session !== null && !session.historyReplayed && feed.entries.length === 0 ? (
+      {session?.historyState === 'unavailable' ? (
         <p className="dsh-chat-note">{t('chat.historyUnavailable')}</p>
       ) : null}
       <MessageList t={t} entries={feed.entries} />
@@ -207,7 +221,7 @@ export function App(): ReactElement {
         value={draft}
         onChange={changeDraft}
         onSubmit={send}
-        disabled={session === null || session.sessionId === null}
+        disabled={session !== null && session.sessionId === null}
         onCreateSession={openNewSession}
       />
       <PanelStatus t={t} status={panelStatus} streamStatus={feed.status} error={feed.error} />

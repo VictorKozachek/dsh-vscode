@@ -191,6 +191,9 @@ export class ChatController {
   readonly #transcript = new SessionTranscriptStore();
   readonly #openNewSession: (() => void) | undefined;
   #boundSessionId: string | null = null;
+  /** Последний отправленный текст — для «Повторить» после ошибки. */
+  #lastInput: string | null = null;
+  #lastInputSessionId: string | null = null;
   #turnId: string | null = null;
   #status: ChatStreamStatus = 'idle';
   /** Отмену запросили до того, как turn.start вернул turnId. */
@@ -255,6 +258,13 @@ export class ChatController {
           return;
         }
         this.#batcher.flush();
+        if (this.#boundSessionId !== null) {
+          this.#transcript.appendToolCall(this.#boundSessionId, {
+            callId: call.callId,
+            name: call.name,
+            arguments: call.arguments ?? {}
+          });
+        }
         this.#post({
           type: 'chatToolCall',
           call: {
@@ -276,6 +286,14 @@ export class ChatController {
           return;
         }
         this.#batcher.flush();
+        if (this.#boundSessionId !== null) {
+          this.#transcript.appendToolResult(this.#boundSessionId, {
+            callId: result.callId,
+            ok: result.ok ?? false,
+            ...(result.result === undefined ? {} : { result: result.result }),
+            ...(result.error === undefined ? {} : { error: result.error })
+          });
+        }
         const message: ExtensionMessage =
           result.error === undefined
             ? {
@@ -348,6 +366,8 @@ export class ChatController {
           })
         );
       }
+      // Начальная привязка: WebView получает сессию даже без события смены.
+      this.#syncSession(true);
     }
   }
 
@@ -375,6 +395,8 @@ export class ChatController {
       throw new ChatControllerError('нет активной сессии DSH');
     }
     this.#cancelRequested = false;
+    this.#lastInput = trimmed;
+    this.#lastInputSessionId = sessionId;
 
     this.#messageCounter += 1;
     this.#transcript.appendUser(sessionId, trimmed);
@@ -388,6 +410,16 @@ export class ChatController {
         sessionId,
         input: trimmed
       })) as { turnId?: string };
+
+      // Пока шёл turn.start, пользователь переключил сессию: не выставляем
+      // streaming старой сессии (её токены и так отфильтруются).
+      if (
+        this.#sessions !== undefined &&
+        this.#sessions.getSnapshot().sessionId !== sessionId
+      ) {
+        this.#log(`ChatController: сессия сменилась во время turn.start (${sessionId})`);
+        return;
+      }
       this.#turnId = result.turnId ?? null;
 
       // Отмену нажали, пока шёл turn.start: ход уже запущен — гасим его.
@@ -451,8 +483,27 @@ export class ChatController {
     this.#openNewSession?.();
   }
 
-  /** Повторная синхронизация состояния сессии (кнопка «Повторить»). */
+  /** Кнопка «Повторить»: после ошибки переотправляет последний ввод. */
   retry(): void {
+    if (
+      this.#status === 'error' &&
+      this.#lastInput !== null &&
+      this.#lastInputSessionId !== null &&
+      this.#lastInputSessionId === this.#boundSessionId
+    ) {
+      const input = this.#lastInput;
+      void this.send(input).catch((error: unknown) => {
+        this.#log(
+          `ChatController: повторный ход не удался: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+      return;
+    }
+    this.#syncSession(true);
+  }
+
+  /** Начальная/повторная синхронизация при готовности WebView. */
+  syncNow(): void {
     this.#syncSession(true);
   }
 
@@ -468,9 +519,11 @@ export class ChatController {
       return true;
     }
     if (this.#boundSessionId === null) {
-      return sessionId === undefined;
+      return true;
     }
-    return sessionId === undefined || sessionId === this.#boundSessionId;
+    // Строгая политика: у активной сессии события без sessionId не принимаем
+    // (иначе ошибка чужой сессии протечёт в активный чат).
+    return sessionId === this.#boundSessionId;
   }
 
   /** Переключение сессии: история, черновик, статус (#024). */
@@ -491,8 +544,29 @@ export class ChatController {
       this.#status = 'idle';
       this.#boundSessionId = snapshot.sessionId;
     }
-    const messages = snapshot.sessionId === null ? [] : this.#transcript.messagesFor(snapshot.sessionId);
+    const records =
+      snapshot.sessionId === null ? [] : this.#transcript.recordsFor(snapshot.sessionId);
+    const messages =
+      snapshot.sessionId === null ? [] : this.#transcript.messagesFor(snapshot.sessionId);
     this.#post({ type: 'replaceMessages', messages: [...messages] });
+    for (const record of records) {
+      if (record.kind === 'toolCall') {
+        this.#post({
+          type: 'chatToolCall',
+          call: { id: record.callId, name: record.name, arguments: record.arguments }
+        });
+      } else if (record.kind === 'toolResult') {
+        this.#post({
+          type: 'chatToolResult',
+          result: {
+            callId: record.callId,
+            ok: record.ok,
+            ...(record.result === undefined ? {} : { result: record.result }),
+            ...(record.error === undefined ? {} : { error: record.error })
+          }
+        });
+      }
+    }
     this.#post({ type: 'chatSession', session: this.#sessionDto(snapshot) });
     this.#post({
       type: 'composerDraft',
@@ -505,15 +579,15 @@ export class ChatController {
   }
 
   #sessionDto(snapshot: ChatSessionSnapshot): ChatSessionDto {
-    const messages =
-      snapshot.sessionId === null ? [] : this.#transcript.messagesFor(snapshot.sessionId);
+    const hasHistory =
+      snapshot.sessionId !== null && this.#transcript.hasHistory(snapshot.sessionId);
     return {
       sessionId: snapshot.sessionId,
       title: snapshot.title,
       model: snapshot.model ?? '',
       preset: snapshot.preset ?? 'standard',
       status: snapshot.status,
-      historyReplayed: messages.length > 0
+      historyState: hasHistory ? 'replayed' : 'empty'
     };
   }
 

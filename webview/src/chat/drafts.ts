@@ -28,3 +28,17 @@ export class DraftStore {
     return this.#drafts.size;
   }
 }
+
+/**
+ * Переключение сессии: сохранить текущий черновик под старой сессией и вернуть
+ * черновик новой. Вынесено из компонента, чтобы проверять без DOM.
+ */
+export function switchSessionDraft(
+  store: DraftStore,
+  previousSessionId: string | null,
+  nextSessionId: string | null,
+  currentText: string
+): string {
+  store.set(previousSessionId, currentText);
+  return store.get(nextSessionId);
+}
