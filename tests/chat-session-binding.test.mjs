@@ -1,0 +1,195 @@
+import assert from 'node:assert/strict';
+import { register } from 'node:module';
+import test from 'node:test';
+
+register('./helpers/ts-loader.mjs', import.meta.url);
+const { ChatController } = await import('../extension/src/views/chatEvents.ts');
+
+/** Мост-заглушка: записывает запросы и умеет эмитить события. */
+function createBridge(handlers = {}) {
+  const calls = [];
+  const listeners = new Map();
+  return {
+    calls,
+    async request(method, params) {
+      calls.push({ method, params });
+      const handler = handlers[method];
+      if (handler === undefined) {
+        return { turnId: 'turn-1' };
+      }
+      return await handler(params);
+    },
+    on(event, listener) {
+      const set = listeners.get(event) ?? new Set();
+      set.add(listener);
+      listeners.set(event, set);
+      return {
+        dispose() {
+          set.delete(listener);
+        }
+      };
+    },
+    emit(event, payload) {
+      for (const listener of listeners.get(event) ?? []) {
+        listener(payload);
+      }
+    }
+  };
+}
+
+/** Порт SessionManager: снимок, черновики, события. */
+function createSessions(initial = { sessionId: 'sess-a', title: 'Сессия A', status: 'active' }) {
+  let snapshot = initial;
+  const drafts = new Map();
+  const listeners = new Map();
+  return {
+    getSnapshot: () => snapshot,
+    getDraft: (id) => drafts.get(id) ?? '',
+    setDraft: (id, text) => {
+      drafts.set(id, text);
+    },
+    on(event, listener) {
+      const set = listeners.get(event) ?? new Set();
+      set.add(listener);
+      listeners.set(event, set);
+      return { dispose: () => set.delete(listener) };
+    },
+    switchTo(sessionId, title = 'Сессия B') {
+      snapshot = { sessionId, title, status: 'active' };
+      for (const listener of listeners.get('sessionChanged') ?? []) {
+        listener(snapshot);
+      }
+    },
+    setStatus(status) {
+      snapshot = { ...snapshot, status };
+      for (const listener of listeners.get('statusChanged') ?? []) {
+        listener(snapshot);
+      }
+    }
+  };
+}
+
+function createController(bridge, sessions) {
+  const posts = [];
+  const controller = new ChatController({
+    bridge,
+    getSessionId: () => sessions.getSnapshot().sessionId,
+    post: (message) => posts.push(message),
+    sessions
+  });
+  return { controller, posts };
+}
+
+test('события неактивной сессии отбрасываются', () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+
+  bridge.emit('token', { sessionId: 'sess-b', turnId: 'turn-b', text: 'чужое' });
+  bridge.emit('tool.call', { sessionId: 'sess-b', callId: 'c1', name: 'read_file' });
+  bridge.emit('turn.done', { sessionId: 'sess-b', turnId: 'turn-b', finishReason: 'stop' });
+
+  assert.equal(posts.filter((message) => message.type === 'chatToken').length, 0);
+  assert.equal(posts.filter((message) => message.type === 'chatToolCall').length, 0);
+  assert.equal(posts.filter((message) => message.type === 'chatDone').length, 0);
+  controller.dispose();
+});
+
+test('переключение сессии: история, черновик и статус заменяются', async () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+
+  await controller.send('вопрос в A');
+  bridge.emit('token', { sessionId: 'sess-a', turnId: 'turn-1', text: 'ответ A' });
+  bridge.emit('turn.done', { sessionId: 'sess-a', turnId: 'turn-1', finishReason: 'stop' });
+  await new Promise((resolve) => setImmediate(resolve));
+  posts.length = 0;
+
+  sessions.setDraft('sess-b', 'черновик B');
+  sessions.switchTo('sess-b');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const replaced = posts.find((message) => message.type === 'replaceMessages');
+  assert.deepEqual(replaced.messages, [], 'у B истории нет — чистый лист');
+  const sessionMessage = posts.find((message) => message.type === 'chatSession');
+  assert.equal(sessionMessage.session.sessionId, 'sess-b');
+  assert.equal(sessionMessage.session.title, 'Сессия B');
+  assert.equal(sessionMessage.session.historyReplayed, false);
+  const draft = posts.find((message) => message.type === 'composerDraft');
+  assert.equal(draft.text, 'черновик B');
+  assert.equal(controller.boundSessionId, 'sess-b');
+  controller.dispose();
+});
+
+test('переключение обратно восстанавливает историю сессии', async () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller, posts } = createController(bridge, sessions);
+
+  await controller.send('сообщение A');
+  bridge.emit('token', { sessionId: 'sess-a', turnId: 'turn-1', text: 'ответ' });
+  bridge.emit('turn.done', { sessionId: 'sess-a', turnId: 'turn-1', finishReason: 'stop' });
+  sessions.switchTo('sess-b');
+  await new Promise((resolve) => setImmediate(resolve));
+  posts.length = 0;
+
+  sessions.switchTo('sess-a', 'Сессия A');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const replaced = posts.find((message) => message.type === 'replaceMessages');
+  assert.deepEqual(
+    replaced.messages.map((message) => [message.role, message.text]),
+    [
+      ['user', 'сообщение A'],
+      ['assistant', 'ответ']
+    ]
+  );
+  const sessionMessage = posts.find((message) => message.type === 'chatSession');
+  assert.equal(sessionMessage.session.historyReplayed, true);
+  controller.dispose();
+});
+
+test('Стоп отменяет ход только активной сессии', async () => {
+  const bridge = createBridge({
+    'turn.start': (params) => ({ turnId: `turn-${params.sessionId}`, sessionId: params.sessionId })
+  });
+  const sessions = createSessions();
+  const { controller } = createController(bridge, sessions);
+
+  await controller.send('A');
+  await controller.cancel();
+  const firstCancel = bridge.calls.find((call) => call.method === 'turn.cancel');
+  assert.deepEqual(firstCancel, {
+    method: 'turn.cancel',
+    params: { sessionId: 'sess-a', turnId: 'turn-sess-a' }
+  });
+
+  sessions.switchTo('sess-b');
+  await new Promise((resolve) => setImmediate(resolve));
+  await controller.send('B');
+  await controller.cancel();
+
+  const cancels = bridge.calls.filter((call) => call.method === 'turn.cancel');
+  assert.equal(cancels.length, 2);
+  assert.deepEqual(cancels[1], {
+    method: 'turn.cancel',
+    params: { sessionId: 'sess-b', turnId: 'turn-sess-b' }
+  });
+  controller.dispose();
+});
+
+test('черновик сохраняется за активной сессией', () => {
+  const bridge = createBridge();
+  const sessions = createSessions();
+  const { controller } = createController(bridge, sessions);
+
+  controller.setDraft('недописанное');
+  assert.equal(sessions.getDraft('sess-a'), 'недописанное');
+
+  sessions.switchTo('sess-b');
+  controller.setDraft('для B');
+  assert.equal(sessions.getDraft('sess-b'), 'для B');
+  assert.equal(sessions.getDraft('sess-a'), 'недописанное');
+  controller.dispose();
+});

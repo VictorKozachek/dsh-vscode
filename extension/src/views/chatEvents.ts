@@ -9,7 +9,8 @@
  * `import type` и стираются при исполнении.
  */
 
-import type { ChatStreamStatus, ExtensionMessage } from './chatHtml';
+import type { ChatSessionDto, ChatStreamStatus, ExtensionMessage } from './chatHtml';
+import { SessionTranscriptStore } from './chatTranscript';
 
 /** Порт моста: подписка на события и вызов методов. */
 export interface ChatBridgePort {
@@ -103,6 +104,26 @@ export class ChatControllerError extends Error {
   }
 }
 
+/** Снимок сессии для привязки чата (#024). */
+export interface ChatSessionSnapshot {
+  readonly sessionId: string | null;
+  readonly title: string | null;
+  readonly status: string;
+  readonly model?: string | undefined;
+  readonly preset?: string | undefined;
+}
+
+/** Порт `SessionManager` (#007) для привязки чата к сессии. */
+export interface ChatSessionsPort {
+  getSnapshot(): ChatSessionSnapshot;
+  getDraft(sessionId: string): string;
+  setDraft(sessionId: string, text: string): Promise<void> | void;
+  on(
+    event: 'sessionChanged' | 'statusChanged',
+    listener: (snapshot: ChatSessionSnapshot) => void
+  ): { dispose(): void };
+}
+
 /** Настройки контроллера чата. */
 export interface ChatControllerOptions {
   readonly bridge: ChatBridgePort;
@@ -116,20 +137,27 @@ export interface ChatControllerOptions {
   /** Отмена запланированного сброса — подменяется в тестах. */
   readonly cancel?: ((handle: unknown) => void) | undefined;
   readonly logger?: ((line: string) => void) | undefined;
+  /** Привязка к активной сессии: история, черновик, статус (#024). */
+  readonly sessions?: ChatSessionsPort | undefined;
+  /** CTA «Создать сессию» из composer. */
+  readonly openNewSession?: (() => void) | undefined;
 }
 
 interface TokenPayload {
+  readonly sessionId?: string;
   readonly turnId?: string;
   readonly text?: string;
 }
 
 interface ToolCallPayload {
+  readonly sessionId?: string;
   readonly callId?: string;
   readonly name?: string;
   readonly arguments?: Record<string, unknown>;
 }
 
 interface ToolResultPayload {
+  readonly sessionId?: string;
   readonly callId?: string;
   readonly ok?: boolean;
   readonly result?: unknown;
@@ -137,12 +165,14 @@ interface ToolResultPayload {
 }
 
 interface TurnDonePayload {
+  readonly sessionId?: string;
   readonly turnId?: string;
   readonly finishReason?: 'stop' | 'cancelled' | 'error';
 }
 
 interface ErrorPayload {
   readonly message?: string;
+  readonly sessionId?: string;
 }
 
 /**
@@ -157,6 +187,10 @@ export class ChatController {
   readonly #log: (line: string) => void;
   readonly #batcher: TokenBatcher;
   readonly #subscriptions: { dispose(): void }[] = [];
+  readonly #sessions: ChatSessionsPort | undefined;
+  readonly #transcript = new SessionTranscriptStore();
+  readonly #openNewSession: (() => void) | undefined;
+  #boundSessionId: string | null = null;
   #turnId: string | null = null;
   #status: ChatStreamStatus = 'idle';
   /** Отмену запросили до того, как turn.start вернул turnId. */
@@ -169,6 +203,8 @@ export class ChatController {
     this.#getSessionId = options.getSessionId;
     this.#post = options.post;
     this.#log = options.logger ?? (() => undefined);
+    this.#sessions = options.sessions;
+    this.#openNewSession = options.openNewSession;
 
     this.#batcher = new TokenBatcher({
       emit: (text) => {
@@ -186,6 +222,9 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('token', (payload) => {
         const token = payload as TokenPayload;
+        if (!this.#accepts(token.sessionId)) {
+          return;
+        }
         // Поздние токены прошлого хода не должны попадать в новый ответ.
         if (
           token.turnId !== undefined &&
@@ -198,6 +237,9 @@ export class ChatController {
           this.#turnId = token.turnId;
         }
         if (typeof token.text === 'string') {
+          if (this.#boundSessionId !== null) {
+            this.#transcript.appendAssistantToken(this.#boundSessionId, token.text);
+          }
           this.#batcher.push(token.text);
         }
       })
@@ -206,6 +248,9 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('tool.call', (payload) => {
         const call = payload as ToolCallPayload;
+        if (!this.#accepts(call.sessionId)) {
+          return;
+        }
         if (call.callId === undefined || call.name === undefined) {
           return;
         }
@@ -224,6 +269,9 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('tool.result', (payload) => {
         const result = payload as ToolResultPayload;
+        if (!this.#accepts(result.sessionId)) {
+          return;
+        }
         if (result.callId === undefined) {
           return;
         }
@@ -249,6 +297,9 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('turn.done', (payload) => {
         const done = payload as TurnDonePayload;
+        if (!this.#accepts(done.sessionId)) {
+          return;
+        }
         // Старый turn.done не должен закрывать новый ход.
         if (
           done.turnId !== undefined &&
@@ -275,6 +326,9 @@ export class ChatController {
     this.#subscriptions.push(
       this.#bridge.on('error', (payload) => {
         const error = payload as ErrorPayload;
+        if (!this.#accepts(error.sessionId)) {
+          return;
+        }
         this.#batcher.flush();
         this.#status = 'error';
         this.#post({
@@ -284,6 +338,17 @@ export class ChatController {
         });
       })
     );
+
+    if (this.#sessions !== undefined) {
+      this.#boundSessionId = this.#sessions.getSnapshot().sessionId;
+      for (const event of ['sessionChanged', 'statusChanged'] as const) {
+        this.#subscriptions.push(
+          this.#sessions.on(event, () => {
+            this.#syncSession();
+          })
+        );
+      }
+    }
   }
 
   /** Статус потока. */
@@ -312,6 +377,7 @@ export class ChatController {
     this.#cancelRequested = false;
 
     this.#messageCounter += 1;
+    this.#transcript.appendUser(sessionId, trimmed);
     this.#post({
       type: 'message',
       message: { id: `user-${String(this.#messageCounter)}`, role: 'user', text: trimmed }
@@ -367,6 +433,88 @@ export class ChatController {
     this.#status = 'cancelled';
     this.#post({ type: 'chatCancelled' });
     this.#post({ type: 'chatStatus', status: 'cancelled' });
+  }
+
+  /**
+   * Сохраняет черновик composer для активной сессии (#024).
+   */
+  setDraft(text: string): void {
+    const sessionId = this.#sessions?.getSnapshot().sessionId ?? null;
+    if (sessionId === null || this.#sessions === undefined) {
+      return;
+    }
+    void this.#sessions.setDraft(sessionId, text);
+  }
+
+  /** CTA «Создать сессию» без активной сессии. */
+  requestNewSession(): void {
+    this.#openNewSession?.();
+  }
+
+  /** Повторная синхронизация состояния сессии (кнопка «Повторить»). */
+  retry(): void {
+    this.#syncSession(true);
+  }
+
+  /** Текущая привязанная сессия (для тестов и провайдера). */
+  get boundSessionId(): string | null {
+    return this.#boundSessionId;
+  }
+
+  /** События принимаются только от активной сессии. */
+  #accepts(sessionId: string | undefined): boolean {
+    // Без порта сессий (старые тесты/каркас) фильтрации нет.
+    if (this.#sessions === undefined) {
+      return true;
+    }
+    if (this.#boundSessionId === null) {
+      return sessionId === undefined;
+    }
+    return sessionId === undefined || sessionId === this.#boundSessionId;
+  }
+
+  /** Переключение сессии: история, черновик, статус (#024). */
+  #syncSession(force = false): void {
+    const snapshot = this.#sessions?.getSnapshot();
+    if (snapshot === undefined) {
+      return;
+    }
+    const changed = snapshot.sessionId !== this.#boundSessionId;
+    if (!changed && !force) {
+      this.#post({ type: 'chatSession', session: this.#sessionDto(snapshot) });
+      return;
+    }
+    if (changed) {
+      this.#batcher.flush();
+      this.#turnId = null;
+      this.#cancelRequested = false;
+      this.#status = 'idle';
+      this.#boundSessionId = snapshot.sessionId;
+    }
+    const messages = snapshot.sessionId === null ? [] : this.#transcript.messagesFor(snapshot.sessionId);
+    this.#post({ type: 'replaceMessages', messages: [...messages] });
+    this.#post({ type: 'chatSession', session: this.#sessionDto(snapshot) });
+    this.#post({
+      type: 'composerDraft',
+      text:
+        snapshot.sessionId === null
+          ? ''
+          : (this.#sessions?.getDraft(snapshot.sessionId) ?? '')
+    });
+    this.#post({ type: 'chatStatus', status: 'idle' });
+  }
+
+  #sessionDto(snapshot: ChatSessionSnapshot): ChatSessionDto {
+    const messages =
+      snapshot.sessionId === null ? [] : this.#transcript.messagesFor(snapshot.sessionId);
+    return {
+      sessionId: snapshot.sessionId,
+      title: snapshot.title,
+      model: snapshot.model ?? '',
+      preset: snapshot.preset ?? 'standard',
+      status: snapshot.status,
+      historyReplayed: messages.length > 0
+    };
   }
 
   async #requestCancel(sessionId: string): Promise<void> {

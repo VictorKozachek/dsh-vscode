@@ -7,10 +7,20 @@ export interface ComposerProps {
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly onSubmit: () => void;
+  /** Без активной сессии composer заблокирован (#024). */
+  readonly disabled?: boolean | undefined;
+  readonly onCreateSession?: (() => void) | undefined;
 }
 
 /** Composer: многострочный ввод, Enter — отправить, Shift+Enter — новая строка. */
-export function Composer({ t, value, onChange, onSubmit }: ComposerProps): ReactElement {
+export function Composer({
+  t,
+  value,
+  onChange,
+  onSubmit,
+  disabled = false,
+  onCreateSession
+}: ComposerProps): ReactElement {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -40,18 +50,29 @@ export function Composer({ t, value, onChange, onSubmit }: ComposerProps): React
         }}
         onKeyDown={handleKeyDown}
         aria-describedby="dsh-composer-hint"
+        disabled={disabled}
       />
       <p id="dsh-composer-hint" className="dsh-composer__hint">
         {t('composer.hint')}
       </p>
-      <button
-        type="submit"
-        className="dsh-button dsh-button--primary"
-        disabled={value.trim() === ''}
-        aria-label={t('composer.send')}
-      >
-        {t('composer.send')}
-      </button>
+      {disabled ? (
+        <button
+          type="button"
+          className="dsh-button dsh-button--primary"
+          onClick={onCreateSession}
+        >
+          {t('composer.createSession')}
+        </button>
+      ) : (
+        <button
+          type="submit"
+          className="dsh-button dsh-button--primary"
+          disabled={value.trim() === ''}
+          aria-label={t('composer.send')}
+        >
+          {t('composer.send')}
+        </button>
+      )}
     </form>
   );
 }

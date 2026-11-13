@@ -10,6 +10,10 @@ export interface HeaderProps {
   readonly sandboxMode: string;
   readonly status: ChatPanelStatus;
   readonly onStop: () => void;
+  /** Имя активной сессии (#024). */
+  readonly sessionTitle?: string | null | undefined;
+  /** Статус сессии из рантайма. */
+  readonly sessionStatus?: string | undefined;
 }
 
 /** Шапка панели: имя воркспейса, модель, sandbox, кнопка «Стоп». */
@@ -19,7 +23,9 @@ export function Header({
   model,
   sandboxMode,
   status,
-  onStop
+  onStop,
+  sessionTitle,
+  sessionStatus
 }: HeaderProps): ReactElement {
   return (
     <header className="dsh-header">
@@ -37,6 +43,13 @@ export function Header({
         </button>
       </div>
       <dl className="dsh-header__meta">
+        <div className="dsh-header__meta-item">
+          <dt>{t('header.session')}</dt>
+          <dd title={sessionTitle ?? undefined}>
+            {sessionTitle ?? t('header.noSession')}
+            {sessionStatus === undefined ? '' : ` · ${sessionStatus}`}
+          </dd>
+        </div>
         <div className="dsh-header__meta-item">
           <dt>{t('header.workspace')}</dt>
           <dd title={workspaceName}>{workspaceName}</dd>
