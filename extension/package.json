@@ -81,6 +81,11 @@
         "command": "dsh.pruneWorkspaces",
         "title": "Prune Workspaces",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.revertLastEdit",
+        "title": "Revert Last Edit",
+        "category": "DSH"
       }
     ],
     "configuration": {
