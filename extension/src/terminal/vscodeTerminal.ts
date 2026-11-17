@@ -6,15 +6,14 @@
 import * as vscode from 'vscode';
 
 import type { TerminalExecution, TerminalSession } from './terminalBridge';
+import { buildTerminalOptions } from './terminalOptions';
 
 export function createVscodeTerminalSession(input: {
   readonly cwd: string | undefined;
   readonly name: string;
+  readonly env?: Readonly<Record<string, string>> | undefined;
 }): TerminalSession {
-  const terminal = vscode.window.createTerminal({
-    name: input.name,
-    ...(input.cwd === undefined ? {} : { cwd: input.cwd })
-  });
+  const terminal = vscode.window.createTerminal(buildTerminalOptions(input));
   terminal.show(true);
   const integration = terminal.shellIntegration;
   return {

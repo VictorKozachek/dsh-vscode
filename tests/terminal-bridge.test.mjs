@@ -149,3 +149,22 @@ test('start: handle возвращается сразу, output отдаёт ч�
   assert.equal(handle.status, 'cancelled');
   assert.equal(calls.disposed, 1);
 });
+
+test('terminal/create env и cwd доходят до опций VS Code-терминала', async () => {
+  const { buildTerminalOptions } = await import(
+    '../extension/src/terminal/terminalOptions.ts'
+  );
+  const options = buildTerminalOptions({
+    name: 'DSH: echo',
+    cwd: '/repo',
+    env: { DSH_MODE: 'test', TOKEN: 'x' }
+  });
+  assert.deepEqual(options, {
+    name: 'DSH: echo',
+    cwd: '/repo',
+    env: { DSH_MODE: 'test', TOKEN: 'x' }
+  });
+  assert.deepEqual(buildTerminalOptions({ name: 'n', cwd: undefined, env: {} }), {
+    name: 'n'
+  });
+});
