@@ -17,14 +17,21 @@ import {
 import type { DiffController } from './diff/diffController';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
 import {
+  registerWorkspaceLifecycle,
+  type WorkspaceLifecycleHandle
+} from './workspace/lifecycleController';
+import type { LifecycleState } from './workspace/lifecycle';
+import { VscodeDiffEditor } from './diff/diffEditor';
+import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
+import type { ExtensionMessage } from './views/chatHtml';
+import {
   checkRemoteRuntime,
   remoteKind,
   translateWorkspacePath
 } from './workspace/remote';
 import { resolveWorkspace, type ResolvedWorkspace } from './workspace/resolver';
 import { discoverRuntime } from './runtime/discovery';
-import { AcpRuntime } from './runtime/acpRuntime';
-import type { RuntimeState } from './runtime/acpRuntime';
+import type { AcpRuntime, RuntimeState } from './runtime/acpRuntime';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -57,6 +64,8 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
 };
 
 let statusBarItem: vscode.StatusBarItem | undefined;
+let workspaceLifecycle: WorkspaceLifecycleHandle | undefined;
+let lastContextPack: unknown;
 let remoteWarningShown = false;
 let activeWorkspace: ResolvedWorkspace | null = null;
 
@@ -282,6 +291,59 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
 
+  // Lifecycle воркспейса (#011): смена папки переключает контекст и сессии с
+  // grace period; компоненты активного рантайма подключаются к панели/командам.
+  const applyRuntimeHandle = (handle: { runtime: DshWorkspaceRuntime } | null): void => {
+    if (handle === null) {
+      chatView.setChat(undefined);
+      chatView.setApprovals(undefined);
+      chatView.setChatSession(undefined);
+      setSessionManager(null);
+      setDiffController(null);
+      lastContextPack = undefined;
+      // Ссылка на активный рантайм очищается, но сам AcpRuntime живёт в grace:
+      // dispose делает lifecycle.
+      dshRuntime = undefined;
+      return;
+    }
+    const runtime = handle.runtime;
+    // Статус/версии #021 — от активного lifecycle-рантайма; старый не
+    // закрываем — его держит grace period lifecycle.
+    dshRuntime = runtime.acpRuntime;
+    updateStatusBarRuntime(runtime.acpRuntime.state);
+    maybeWarnRemoteRuntime();
+    chatView.setChat(runtime.chat);
+    chatView.setApprovals({
+      resolve: (id, decision) => runtime.approvals.resolve(id, decision),
+      showDiff: (id) => runtime.approvals.showDiff(id)
+    });
+    chatView.setChatSession({
+      draftChanged: (text) => runtime.chat.setDraft(text),
+      openNewSession: () => runtime.chat.requestNewSession(),
+      retryChat: () => runtime.chat.retry()
+    });
+    setSessionManager(runtime.sessions);
+    setDiffController(runtime.diff ?? null);
+    lastContextPack = runtime.contextPack;
+    log.appendLine(`воркспейс ${runtime.workspaceId}: рантайм подключён (${runtime.state})`);
+  };
+
+  workspaceLifecycle = registerWorkspaceLifecycle({
+    context,
+    log: (line) => {
+      log.appendLine(line);
+    },
+    onStatus: (state) => updateStatusBar(state),
+    onRuntimeState: (state) => {
+      updateStatusBarRuntime(state);
+      maybeWarnRemoteRuntime();
+    },
+    postMessage: (message) => chatView.postMessage(message as ExtensionMessage),
+    createDiffEditor: () => new VscodeDiffEditor(context),
+    onRuntimeChange: (handle) => applyRuntimeHandle(handle)
+  });
+  context.subscriptions.push(workspaceLifecycle);
+
   // Панель Sessions (#022): список сессий воркспейса поверх SessionManager.
   context.subscriptions.push(
     registerSessionsView(context, {
@@ -291,36 +353,6 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
-
-  const folderPath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
-  if (typeof folderPath === 'string' && folderPath !== '') {
-    const configuration = vscode.workspace.getConfiguration('dsh');
-    dshRuntime = new AcpRuntime({
-      workspacePath: folderPath,
-      executablePath: configuration.get<string>('executablePath') ?? 'dsh',
-      profile: configuration.get<string>('profile') ?? 'acp',
-      homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
-      logger: (line) => {
-        log.appendLine(line);
-      },
-      onStateChanged: (state) => {
-        updateStatusBarRuntime(state);
-        if (state === 'running' && !remoteWarningShown) {
-          const kind = remoteKind(vscode.env?.remoteName);
-          if (kind !== 'local') {
-            const status = checkRemoteRuntime({
-              remoteName: vscode.env?.remoteName,
-              version: dshRuntime?.version.dsh
-            });
-            if (status.kind !== 'ok') {
-              remoteWarningShown = true;
-              void vscode.window.showWarningMessage?.(status.instructions);
-            }
-          }
-        }
-      }
-    });
-  }
 
   void refreshWorkspaceIdentity();
   context.subscriptions.push(
@@ -334,9 +366,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {
-  void dshRuntime?.dispose();
+export async function deactivate(): Promise<void> {
+  // Рантаймы закрывает lifecycle.disposeAsync (teardownAll).
   dshRuntime = undefined;
+  await workspaceLifecycle?.disposeAsync();
+  workspaceLifecycle = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
 }
@@ -434,6 +468,24 @@ async function checkRemoteAvailability(remoteName: string | undefined): Promise<
   }
 }
 
+/** Подпись состояния lifecycle для статус-бара. */
+const LIFECYCLE_LABELS: Readonly<Record<LifecycleState, string>> = {
+  resolving: 'resolving',
+  'loading-context': 'loading context',
+  ready: 'ready',
+  paused: 'paused',
+  teardown: 'idle'
+};
+
+function updateStatusBar(state?: LifecycleState): void {
+  if (statusBarItem === undefined) {
+    return;
+  }
+  const label = state === undefined ? 'idle' : LIFECYCLE_LABELS[state];
+  statusBarItem.text = `DSH · ${workspaceName()} · ${label}`;
+  statusBarItem.show();
+}
+
 /**
  * Статус-бар из состояния DSH-рантайма (#021): после реального старта
  * показывает версии dsh/ACP (критерий «версия … в статусе»).
@@ -458,15 +510,41 @@ function updateStatusBarRuntime(state: RuntimeState): void {
   statusBarItem.show();
 }
 
-function updateStatusBar(): void {
-  if (statusBarItem === undefined) {
+/** Remote-версия #012: missing/old → инструкция вместо падения. */
+function maybeWarnRemoteRuntime(): void {
+  if (remoteWarningShown || dshRuntime === undefined) {
     return;
   }
-  statusBarItem.text = `DSH · ${workspaceName()} · idle`;
-  statusBarItem.show();
+  if (remoteKind(vscode.env?.remoteName) === 'local') {
+    return;
+  }
+  const status = checkRemoteRuntime({
+    remoteName: vscode.env?.remoteName,
+    version: dshRuntime.version.dsh
+  });
+  if (status.kind !== 'ok') {
+    remoteWarningShown = true;
+    void vscode.window.showWarningMessage?.(status.instructions);
+  }
 }
 
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.showContextInspector) {
+    const pack = lastContextPack as
+      | {
+          files?: readonly unknown[];
+          skills?: readonly unknown[];
+          rules?: readonly unknown[];
+          stats?: { durationMs?: number };
+        }
+      | undefined;
+    await vscode.window.showInformationMessage(
+      pack === undefined
+        ? 'DSH: контекст ещё не загружен (нет активного воркспейса).'
+        : `DSH контекст: файлов ${pack.files?.length ?? 0}, скилов ${pack.skills?.length ?? 0}, правил ${pack.rules?.length ?? 0} (${pack.stats?.durationMs ?? 0} мс).`
+    );
+    return;
+  }
   if (command === COMMAND_IDS.choosePrimaryWorkspace) {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length < 2) {
