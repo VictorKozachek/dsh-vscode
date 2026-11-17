@@ -40,6 +40,12 @@
           "type": "tree",
           "contextualTitle": "DSH",
           "icon": "media/dsh.svg"
+        },
+        {
+          "id": "dsh.context",
+          "name": "Context",
+          "type": "tree",
+          "contextualTitle": "DSH"
         }
       ]
     },
