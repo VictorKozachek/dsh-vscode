@@ -291,8 +291,19 @@ export function activate(context: vscode.ExtensionContext): void {
       cancel: () => {
         newSessionController?.cancel();
       }
+    },
+    settings: {
+      apply: async (values) => {
+        const result = await applySettings(values);
+        await vscode.window.showInformationMessage(
+          result.errors.length === 0
+            ? `DSH: настройки применены (${String(result.applied)}).`
+            : `DSH: настройки не применены — неверные значения: ${result.errors.join(', ')}.`
+        );
+      }
     }
   });
+  chatViewProvider = chatView;
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatView, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -419,6 +430,55 @@ export function primaryWorkspaceName(): string | undefined {
   }
   const configured = vscode.workspace.getConfiguration('dsh').get<string>('primaryWorkspace');
   return folders.find((folder) => folder.name === configured)?.name ?? folders[0]?.name;
+}
+
+const SETTINGS_KEYS = {
+  executablePath: 'string',
+  profile: 'string',
+  defaultModel: 'string',
+  models: 'array',
+  sandboxMode: ['read-only', 'workspace-write', 'danger-full-access'],
+  approvalPolicy: ['ask', 'auto', 'never'],
+  'workspace.graceMinutes': 'number',
+  'context.maxBytes': 'number',
+  primaryWorkspace: 'string'
+} as const;
+
+/** Текущие значения dsh.* для экрана настроек (#013). */
+function currentSettings(): Record<string, unknown> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  return Object.fromEntries(
+    Object.keys(SETTINGS_KEYS).map((key) => [key, configuration.get<unknown>(key)])
+  );
+}
+
+/** Валидация и применение настроек из WebView (без рестарта). */
+async function applySettings(
+  values: Readonly<Record<string, unknown>>
+): Promise<{ applied: number; errors: readonly string[] }> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const errors: string[] = [];
+  let applied = 0;
+  for (const [key, expected] of Object.entries(SETTINGS_KEYS)) {
+    if (!(key in values)) {
+      continue;
+    }
+    const value = values[key];
+    const valid = Array.isArray(expected)
+      ? typeof value === 'string' && expected.includes(value)
+      : expected === 'array'
+        ? Array.isArray(value) && value.every((item) => typeof item === 'string')
+        : expected === 'number'
+          ? typeof value === 'number' && Number.isFinite(value) && value >= 0
+          : typeof value === 'string';
+    if (!valid) {
+      errors.push(key);
+      continue;
+    }
+    await configuration.update(key, value, vscode.ConfigurationTarget.Workspace);
+    applied += 1;
+  }
+  return { applied, errors };
 }
 
 function workspaceName(): string {
@@ -607,7 +667,7 @@ async function runCommand(command: CommandId): Promise<void> {
   }
   if (command === COMMAND_IDS.openSettings) {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'dsh');
-    void chatViewProvider?.postMessage({ type: 'settingsOpen' });
+    void chatViewProvider?.postMessage({ type: 'settingsOpen', values: currentSettings() });
     return;
   }
   await vscode.window.showInformationMessage(

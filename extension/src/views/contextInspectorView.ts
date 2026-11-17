@@ -45,6 +45,15 @@ export class ContextInspectorProvider implements vscode.TreeDataProvider<Node> {
         { kind: 'leaf', label: contextSummary(inspector), icon: 'dashboard' },
         {
           kind: 'group',
+          label: `Предупреждения манифеста (${String(inspector.manifestWarnings.length)})`,
+          children: inspector.manifestWarnings.map((warning) => ({
+            kind: 'leaf',
+            label: warning,
+            icon: 'warning'
+          }))
+        },
+        {
+          kind: 'group',
           label: `Правила (${String(inspector.rules.length)})`,
           children: inspector.rules.map((rule) => ({
             kind: 'leaf',

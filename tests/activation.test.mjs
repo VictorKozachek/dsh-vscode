@@ -758,3 +758,30 @@ test('инспектор контекста: реальные правила и 
   await extension.deactivate();
   await rm(workspace, { recursive: true, force: true });
 });
+
+test('настройки: settingsOpen с текущими значениями и settingsApply меняет настройку', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.sandboxMode': 'workspace-write', 'dsh.defaultModel': 'deepseek-v4' }
+  });
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({
+    subscriptions: [],
+    extensionUri: { path: '/ext', fsPath: '/ext', toString: () => 'file:///ext' }
+  });
+  resolveChatView(state);
+
+  await state.commands.get('dsh.openSettings')();
+  await tick();
+  const open = state.webviewMessages.find((message) => message.type === 'settingsOpen');
+  assert.ok(open, 'settingsOpen отправлен');
+  assert.equal(open.values.sandboxMode, 'workspace-write');
+  assert.equal(open.values.defaultModel, 'deepseek-v4');
+
+  await state.webviewListeners.at(-1)({
+    type: 'settingsApply',
+    values: { sandboxMode: 'read-only', 'workspace.graceMinutes': 5 }
+  });
+  await tick();
+  assert.equal(state.settings['dsh.sandboxMode'], 'read-only');
+  assert.equal(state.settings['dsh.workspace.graceMinutes'], 5);
+});

@@ -29,6 +29,7 @@ function pack(overrides = {}) {
         ignored: '~/.dsh/skills/fmt/SKILL.md'
       }
     ],
+    ignored: ['node_modules/', '~/.dsh/skills/fmt/SKILL.md', 'dist/'],
     fingerprint: 'abc',
     generatedAt: '2026-11-17T00:00:00.000Z',
     stats: { files: 1, bytes: 100, byLanguage: {}, durationMs: 12, truncated: false },
@@ -45,7 +46,7 @@ test('buildContextInspector: реальные правила, скилы, кон
   assert.equal(inspector.conflicts.length, 1);
   assert.match(inspector.conflicts[0].explanation, /project/);
   assert.match(inspector.conflicts[0].explanation, /приоритет/);
-  assert.deepEqual(inspector.ignoredPaths, ['~/.dsh/skills/fmt/SKILL.md']);
+  assert.deepEqual(inspector.ignoredPaths, ['node_modules/', '~/.dsh/skills/fmt/SKILL.md', 'dist/']);
   assert.equal(inspector.stats.rules, 2);
   assert.equal(inspector.manifestWarnings.length, 1);
   assert.match(contextSummary(inspector), /правил 2/);
@@ -53,7 +54,7 @@ test('buildContextInspector: реальные правила, скилы, кон
 
 test('buildContextInspector: пустой пак не падает', () => {
   const inspector = buildContextInspector(
-    pack({ rules: [], skills: [], conflicts: [], manifestWarnings: [] })
+    pack({ rules: [], skills: [], conflicts: [], manifestWarnings: [], ignored: [] })
   );
   assert.equal(inspector.rules.length, 0);
   assert.equal(inspector.stats.files, 1);

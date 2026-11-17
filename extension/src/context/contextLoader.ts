@@ -174,6 +174,8 @@ export interface ContextPack {
   readonly memory: readonly MemoryEntry[];
   readonly files: readonly FileIndexEntry[];
   readonly conflicts: readonly ContextConflict[];
+  /** Пути, исключённые .gitignore/context.ignore/секреты/усечение (#013). */
+  readonly ignored: readonly string[];
   readonly fingerprint: string;
   readonly generatedAt: string;
   readonly stats: {
@@ -511,6 +513,7 @@ interface Collected {
   readonly files: readonly FoundFile[];
   readonly ruleFiles: readonly RuleFileRef[];
   readonly inputs: readonly string[];
+  readonly ignored: readonly string[];
 }
 
 interface FoundFile {
@@ -680,12 +683,20 @@ export class ContextLoader {
       }
     }
 
-    return { files: walked.files, ruleFiles: walked.ruleFiles, inputs };
+    return {
+      files: walked.files,
+      ruleFiles: walked.ruleFiles,
+      inputs,
+      ignored: walked.ignored
+    };
   }
 
-  async #walk(matcher: IgnoreMatcher): Promise<{ files: FoundFile[]; ruleFiles: RuleFileRef[] }> {
+  async #walk(
+    matcher: IgnoreMatcher
+  ): Promise<{ files: FoundFile[]; ruleFiles: RuleFileRef[]; ignored: string[] }> {
     const files: FoundFile[] = [];
     const ruleFiles: RuleFileRef[] = [];
+    const ignored: string[] = [];
 
     const visit = async (directory: string): Promise<void> => {
       if (this.#disposed || files.length >= this.#maxFiles) {
@@ -709,10 +720,12 @@ export class ContextLoader {
           continue; // .git бывает и каталогом, и файлом (git worktree) — не индексируем
         }
         if (entry.isSymbolicLink()) {
+          ignored.push(relativePath);
           continue; // циклы и внешние ссылки не обходим
         }
         if (entry.isDirectory()) {
           if (ALWAYS_IGNORED_DIRECTORIES.includes(entry.name) || matcher.ignores(relativePath, true)) {
+            ignored.push(`${relativePath}/`);
             continue;
           }
           subdirectories.push(absolutePath);
@@ -728,6 +741,7 @@ export class ContextLoader {
           }
         }
         if (isSecretFile(entry.name) || matcher.ignores(relativePath, false)) {
+          ignored.push(relativePath);
           continue;
         }
         if (files.length >= this.#maxFiles) {
@@ -758,7 +772,7 @@ export class ContextLoader {
     };
 
     await visit(this.#root);
-    return { files, ruleFiles };
+    return { files, ruleFiles, ignored };
   }
 
   // --- сборка пака ---------------------------------------------------------
@@ -795,10 +809,12 @@ export class ContextLoader {
     let bytes = 0;
     let truncated = false;
     const files: FileIndexEntry[] = [];
+    const ignored = [...collected.ignored];
     const byLanguage: Record<string, number> = {};
     for (const file of collected.files) {
       if (bytes + file.size > maxBytes) {
         truncated = true;
+        ignored.push(file.relativePath);
         continue;
       }
       bytes += file.size;
@@ -825,6 +841,7 @@ export class ContextLoader {
       memory,
       files,
       conflicts,
+      ignored,
       fingerprint,
       generatedAt: this.#now().toISOString(),
       stats: {

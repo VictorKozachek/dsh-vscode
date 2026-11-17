@@ -40,6 +40,7 @@ export function App(): ReactElement {
   const [draft, setDraft] = useState('');
   const [newSession, setNewSession] = useState<NewSessionFormDto | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsValues, setSettingsValues] = useState<Readonly<Record<string, unknown>>>({});
   const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
@@ -130,6 +131,7 @@ export function App(): ReactElement {
           break;
         }
         case 'settingsOpen': {
+          setSettingsValues(message.values);
           setSettingsOpen(true);
           break;
         }
@@ -318,7 +320,7 @@ export function App(): ReactElement {
           <div className="dsh-modal">
             <h2 className="dsh-modal__title">Настройки DSH</h2>
             <SettingsScreen
-              initial={{}}
+              initial={settingsValues}
               onApply={(values) => {
                 postToExtension({ type: 'settingsApply', values });
                 setSettingsOpen(false);

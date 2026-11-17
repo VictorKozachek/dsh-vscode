@@ -183,7 +183,7 @@ export type ExtensionMessage =
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
   | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] }
-  | { readonly type: 'settingsOpen' };
+  | { readonly type: 'settingsOpen'; readonly values: Readonly<Record<string, unknown>> };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по

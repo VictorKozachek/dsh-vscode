@@ -52,7 +52,7 @@ export interface ContextInspector {
   readonly rules: readonly InspectorRule[];
   readonly skills: readonly InspectorSkill[];
   readonly conflicts: readonly InspectorConflict[];
-  /** Пути, которые не попали в пак из-за конфликтов/усечения. */
+  /** Пути, которые не попали в пак (gitignore/ignore/секреты/усечение). */
   readonly ignoredPaths: readonly string[];
   readonly manifestWarnings: readonly string[];
 }
@@ -78,7 +78,7 @@ export function buildContextInspector(pack: ContextPack): ContextInspector {
     rules,
     skills,
     conflicts,
-    ignoredPaths: [...new Set(conflicts.map((conflict) => conflict.ignored))],
+    ignoredPaths: [...new Set(pack.ignored ?? [])],
     manifestWarnings: [...pack.manifestWarnings]
   };
 }
@@ -124,5 +124,5 @@ function toConflict(
 
 /** Короткая сводка для статус-бара/уведомления. */
 export function contextSummary(inspector: ContextInspector): string {
-  return `контекст: правил ${String(inspector.stats.rules)}, скилов ${String(inspector.stats.skills)}, файлов ${String(inspector.stats.files)}, ${String(inspector.stats.bytes)} байт`;
+  return `контекст: правил ${String(inspector.stats.rules)}, скилов ${String(inspector.stats.skills)}, файлов ${String(inspector.stats.files)}, ${String(inspector.stats.bytes)} байт; сборка ${inspector.generatedAt}`;
 }
