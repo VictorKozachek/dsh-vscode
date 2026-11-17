@@ -46,7 +46,13 @@ const ru = {
   'markdown.copy': 'Копировать',
   'markdown.copied': 'Скопировано',
   'message.cancelled': 'остановлено',
-  'message.error': 'ошибка'
+  'message.error': 'ошибка',
+  'approval.title': 'Требуется подтверждение',
+  'approval.kind': 'Операция',
+  'approval.allow': 'Разрешить',
+  'approval.allowSession': 'Разрешить для этой сессии',
+  'approval.deny': 'Отклонить',
+  'approval.showDiff': 'Показать diff'
 } as const;
 
 const en: Readonly<Record<keyof typeof ru, string>> = {
@@ -88,7 +94,13 @@ const en: Readonly<Record<keyof typeof ru, string>> = {
   'markdown.copy': 'Copy',
   'markdown.copied': 'Copied',
   'message.cancelled': 'stopped',
-  'message.error': 'error'
+  'message.error': 'error',
+  'approval.title': 'Approval required',
+  'approval.kind': 'Operation',
+  'approval.allow': 'Allow',
+  'approval.allowSession': 'Allow for this session',
+  'approval.deny': 'Deny',
+  'approval.showDiff': 'Show diff'
 };
 
 /** Ключ строки перевода. */
