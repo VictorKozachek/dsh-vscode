@@ -8,19 +8,22 @@
 
 import * as vscode from 'vscode';
 
-import { DshBridge } from '../bridge/dshBridge';
-import { ContextLoader } from '../context/contextLoader';
-import { SessionManager } from '../sessions/sessionManager';
-import { createRegistrySessionPersistence } from '../sessions/registryPersistence';
+import type { DshBridgeOptions } from '../bridge/dshBridge';
+import type { DiffEditorPort } from '../diff/diffController';
+import type { ExtensionMessage } from '../views/chatHtml';
 import { WorkspaceRegistry } from './registry';
 import { resolveWorkspace, type WorkspaceFolderInput } from './resolver';
+import { DshWorkspaceRuntime } from './dshRuntime';
 import {
   WorkspaceLifecycle,
   graceMsFromMinutes,
-  type LifecycleState,
-  type WorkspaceFolderRef,
-  type WorkspaceRuntime
+  type LifecycleState
 } from './lifecycle';
+
+/** Рантайм, отданный хосту для проводки чата/подтверждений/диффов. */
+export interface WorkspaceRuntimeHandle {
+  readonly runtime: DshWorkspaceRuntime;
+}
 
 /** Опции подключения lifecycle к расширению. */
 export interface WorkspaceLifecycleHostOptions {
@@ -30,71 +33,19 @@ export interface WorkspaceLifecycleHostOptions {
   readonly onStatus?:
     | ((state: LifecycleState, workspaceId: string | null) => void)
     | undefined;
+  /** Отдать/забрать компоненты активного воркспейса (#011). */
+  readonly onRuntimeChange?: ((handle: WorkspaceRuntimeHandle | null) => void) | undefined;
+  /** Сообщение в WebView (чат, approval-карточки). */
+  readonly postMessage?: ((message: ExtensionMessage) => Promise<void> | void) | undefined;
+  /** Фабрика diff-редактора (#010) — в проде `VscodeDiffEditor`. */
+  readonly createDiffEditor?: (() => DiffEditorPort) | undefined;
+  /** Подмена опций моста — интеграционные тесты. */
+  readonly bridgeOptions?: Partial<DshBridgeOptions> | undefined;
 }
 
-/** Рантайм одного воркспейса: мост DSH, сессии и контекст. */
-class DshWorkspaceRuntime implements WorkspaceRuntime {
-  readonly workspaceId: string;
-  readonly workspacePath: string;
-  readonly #bridge: DshBridge;
-  readonly #sessions: SessionManager;
-  readonly #loader: ContextLoader;
-  readonly #log: (line: string) => void;
-
-  constructor(
-    folder: WorkspaceFolderRef,
-    options: {
-      readonly memento: vscode.Memento;
-      readonly registry: WorkspaceRegistry;
-      readonly sandboxMode: string | undefined;
-      readonly log: (line: string) => void;
-    }
-  ) {
-    this.workspaceId = folder.id;
-    this.workspacePath = folder.path;
-    this.#log = options.log;
-    this.#bridge = new DshBridge({
-      cwd: folder.path,
-      ...(options.sandboxMode === undefined ? {} : { sandboxMode: options.sandboxMode as never }),
-      logger: { appendLine: (line) => options.log(`[${folder.id}] ${line}`) }
-    });
-    this.#sessions = new SessionManager({
-      workspaceId: folder.id,
-      bridge: this.#bridge,
-      storage: options.memento,
-      persistence: createRegistrySessionPersistence({
-        registry: options.registry,
-        workspacePath: folder.path
-      }),
-      logger: options.log
-    });
-    this.#loader = new ContextLoader({ root: folder.path, logger: options.log });
-  }
-
-  async loadContext(): Promise<void> {
-    const pack = await this.#loader.load();
-    this.#log(`воркспейс ${this.workspaceId}: контекст загружен (${pack.stats?.durationMs ?? 0} мс)`);
-  }
-
-  async restoreSession(): Promise<void> {
-    await this.#sessions.restore();
-  }
-
-  async pause(): Promise<void> {
-    await this.#sessions.pause();
-  }
-
-  async resume(): Promise<void> {
-    // В пределах grace процесс жив: restore возвращает активную сессию без
-    // повторного запуска моста.
-    await this.#sessions.restore();
-  }
-
-  async dispose(): Promise<void> {
-    this.#sessions.dispose();
-    this.#loader.dispose();
-    await this.#bridge.stop();
-  }
+/** Disposable lifecycle + асинхронная остановка (ждёт мост). */
+export interface WorkspaceLifecycleHandle extends vscode.Disposable {
+  disposeAsync(): Promise<void>;
 }
 
 /** Папки VS Code → входы резолвера (#002); неполные папки пропускаются. */
@@ -130,24 +81,46 @@ function registryFromConfiguration(): WorkspaceRegistry {
  */
 export function registerWorkspaceLifecycle(
   options: WorkspaceLifecycleHostOptions
-): vscode.Disposable {
+): WorkspaceLifecycleHandle {
   const configuration = vscode.workspace.getConfiguration('dsh');
   const graceMs = graceMsFromMinutes(configuration.get<number>('workspace.graceMinutes'));
   const sandboxMode = configuration.get<string>('sandboxMode');
+  const approvalPolicy = configuration.get<string>('approvalPolicy');
+  const executablePath = configuration.get<string>('executablePath');
   const registry = registryFromConfiguration();
+  const runtimes = new Map<string, DshWorkspaceRuntime>();
+  let disposed = false;
 
-  const lifecycle = new WorkspaceLifecycle({
-    createRuntime: async (folder) =>
-      new DshWorkspaceRuntime(folder, {
-        memento: options.context.workspaceState,
+  const lifecycle: WorkspaceLifecycle = new WorkspaceLifecycle({
+    createRuntime: async (folder) => {
+      const runtime = new DshWorkspaceRuntime({
+        folder,
+        memento: options.context.workspaceState as never,
         registry,
         sandboxMode,
-        log: options.log
-      }),
+        executablePath,
+        approvalPolicy,
+        log: options.log,
+        post: (message) => options.postMessage?.(message),
+        ...(options.createDiffEditor === undefined
+          ? {}
+          : { createDiffEditor: options.createDiffEditor }),
+        ...(options.bridgeOptions === undefined ? {} : { bridgeOptions: options.bridgeOptions }),
+        // События неактивного воркспейса отбрасываются (#011).
+        isActive: () => lifecycle?.acceptsEvent(folder.id) ?? false
+      });
+      runtimes.set(folder.id, runtime);
+      return runtime;
+    },
     graceMs,
     logger: options.log,
     onStateChanged: (state, workspaceId) => {
       options.onStatus?.(state, workspaceId);
+    },
+    onActiveChanged: (workspaceId) => {
+      options.onStatus?.(lifecycle?.state ?? 'paused', workspaceId);
+      const runtime = workspaceId === null ? undefined : runtimes.get(workspaceId);
+      options.onRuntimeChange?.(runtime === undefined ? null : { runtime });
     }
   });
 
@@ -156,28 +129,49 @@ export function registerWorkspaceLifecycle(
       const resolved = await resolveWorkspace(folderInputs(), {
         remoteName: vscode.env?.remoteName
       });
-      lifecycle.handleWorkspaceFolders(
+      lifecycle?.handleWorkspaceFolders(
         resolved === null ? [] : [{ id: resolved.id, path: resolved.path }]
       );
     } catch (error) {
+      // Не оставляем старый воркспейс активным при ошибке резолва: пауза.
       options.log(
         `lifecycle: не удалось определить воркспейс: ${error instanceof Error ? error.message : String(error)}`
       );
+      await lifecycle?.deactivate();
+      options.onStatus?.('paused', null);
+      options.onRuntimeChange?.(null);
     }
   };
 
   const listener = vscode.workspace.onDidChangeWorkspaceFolders(() => {
-    void refresh();
+    if (!disposed) {
+      void refresh();
+    }
   });
 
   // Стартовая активация: если папка уже открыта, контекст и сессия поднимутся.
   void refresh();
 
-  // Структурный Disposable: не требуем `vscode.Disposable` в тестовом фейке.
   return {
     dispose(): void {
+      disposed = true;
       listener.dispose();
-      void lifecycle.dispose();
+      // Синхронный Disposable VS Code: запускаем остановку, но deactivate()
+      // расширения ждёт её через disposeAsync().
+      void lifecycle?.dispose();
+    },
+    async disposeAsync(): Promise<void> {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      listener.dispose();
+      await lifecycle?.dispose();
+      for (const runtime of runtimes.values()) {
+        await runtime.dispose();
+      }
+      runtimes.clear();
+      options.onRuntimeChange?.(null);
     }
   };
 }

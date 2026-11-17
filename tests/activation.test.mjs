@@ -102,6 +102,9 @@ function createFakeVscode({ settings = {} } = {}) {
       onDidChangeWorkspaceFolders(listener) {
         state.changeListeners.push(listener);
         return { dispose() {} };
+      },
+      registerTextDocumentContentProvider() {
+        return { dispose() {} };
       }
     }
   };
@@ -129,7 +132,7 @@ function loadExtensionWithFakeVscode(fake) {
   }
 }
 
-test('активация: статус-бар показывает имя открытой папки', () => {
+test('активация: статус-бар показывает имя открытой папки', async () => {
   const { fake, state } = createFakeVscode();
   const extension = loadExtensionWithFakeVscode(fake);
   const context = { subscriptions: [] };
@@ -145,7 +148,7 @@ test('активация: статус-бар показывает имя отк
   }
   assert.equal(state.statusBar.text, 'DSH · other-project · idle');
 
-  extension.deactivate();
+  await extension.deactivate();
   assert.equal(state.statusBar.disposed, true);
 });
 
@@ -242,4 +245,48 @@ test('активация: DSH: Prune Workspaces чистит реестр по �
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('активация с папкой: рантайм подключает менеджер, чат, подтверждения и контекст', async () => {
+  const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dsh-activation-runtime-'));
+  const wrapper = path.join(workspace, 'fake-dsh.sh');
+  await writeFile(
+    wrapper,
+    `#!/bin/sh\nexec "${process.execPath}" "${path.resolve('tests/fixtures/fake-dsh-server.mjs')}" "$@"\n`
+  );
+  await chmod(wrapper, 0o755);
+
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.executablePath': wrapper, 'dsh.workspace.graceMinutes': 0 }
+  });
+  state.workspaceFolders = [{ name: 'ws', index: 0, uri: { fsPath: workspace } }];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+  const deadline = Date.now() + 8000;
+  while (
+    Date.now() < deadline &&
+    !state.output.some((line) => line.includes('рантайм подключён'))
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  // Менеджер подключён: команда сессии не говорит «мост не подключён».
+  await state.commands.get('dsh.newSession')();
+  assert.ok(
+    !state.messages.some((message) => /мост не подключён/.test(message)),
+    'менеджер сессий подключён к командам'
+  );
+
+  // Контекст загружен и отдаётся команде (#006/#011).
+  await state.commands.get('dsh.showContextInspector')();
+  assert.ok(
+    state.messages.some((message) => /DSH контекст: файлов/.test(message)),
+    'context pack доходит до UI'
+  );
+
+  await extension.deactivate();
+  await rm(workspace, { recursive: true, force: true });
 });

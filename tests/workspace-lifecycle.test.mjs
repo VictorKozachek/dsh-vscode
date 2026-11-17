@@ -231,3 +231,45 @@ test('graceMsFromMinutes: настройка → мс, мусор → 10 мин�
   assert.equal(graceMsFromMinutes(-5), 600_000);
   assert.equal(graceMsFromMinutes(2.5), 150_000);
 });
+
+test('папка убрана до готовности активации: [] не теряется', async () => {
+  let resolveCreate;
+  const created = new Promise((resolve) => {
+    resolveCreate = resolve;
+  });
+  const runtime = {
+    workspaceId: 'aaaaaaaaaaaaaaaa',
+    workspacePath: '/repo/a',
+    async loadContext() {},
+    async restoreSession() {},
+    async pause() {},
+    async resume() {},
+    async dispose() {}
+  };
+  const lifecycle = new WorkspaceLifecycle({
+    createRuntime: async () => {
+      await created;
+      return runtime;
+    },
+    graceMs: 60_000,
+    debounceMs: 0,
+    schedule: (callback) => {
+      queueMicrotask(callback);
+      return {};
+    },
+    cancel: () => undefined
+  });
+
+  lifecycle.handleWorkspaceFolders([{ id: 'aaaaaaaaaaaaaaaa', path: '/repo/a' }]);
+  await flush();
+  // Активация висит в createRuntime; папку убрали до ready.
+  lifecycle.handleWorkspaceFolders([]);
+  await flush();
+  resolveCreate();
+  await flush();
+  await flush();
+
+  assert.equal(lifecycle.activeWorkspaceId, null, 'A не должна стать активной');
+  assert.notEqual(lifecycle.state, 'ready');
+  await lifecycle.teardownAll();
+});

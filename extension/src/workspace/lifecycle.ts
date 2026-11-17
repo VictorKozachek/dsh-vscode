@@ -93,6 +93,7 @@ export class WorkspaceLifecycle {
   #retained = new Map<string, RetainedRuntime>();
   #foldersTimer: unknown;
   #chain: Promise<unknown> = Promise.resolve();
+  #activating = false;
   #disposed = false;
 
   constructor(options: LifecycleOptions) {
@@ -138,7 +139,14 @@ export class WorkspaceLifecycle {
     }
     // Пустой список при отсутствии активных/удержанных процессов — нечего
     // деактивировать: не планируем лишний таймер (старт без открытой папки).
-    if (folders.length === 0 && this.#active === undefined && this.#retained.size === 0) {
+    if (
+      folders.length === 0 &&
+      this.#active === undefined &&
+      this.#retained.size === 0 &&
+      !this.#activating &&
+      this.#state !== 'resolving' &&
+      this.#state !== 'loading-context'
+    ) {
       return;
     }
     if (this.#foldersTimer !== undefined) {
@@ -220,6 +228,15 @@ export class WorkspaceLifecycle {
     if (this.#disposed) {
       return;
     }
+    this.#activating = true;
+    try {
+      await this.#activateLockedInner(folder);
+    } finally {
+      this.#activating = false;
+    }
+  }
+
+  async #activateLockedInner(folder: WorkspaceFolderRef): Promise<void> {
     if (this.#active?.workspaceId === folder.id) {
       return;
     }

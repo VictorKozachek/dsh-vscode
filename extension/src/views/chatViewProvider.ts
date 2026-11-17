@@ -64,6 +64,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   readonly #session: ChatSession;
   #view: vscode.WebviewView | undefined;
   #disposed = false;
+  #chat: ChatController | undefined;
+  #approvals: ApprovalDispatchPort | undefined;
+  #chatSession: ChatSessionDispatchPort | undefined;
 
   constructor(options: ChatViewProviderOptions) {
     this.#options = options;
@@ -124,6 +127,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Подключить потоковый чат (#011): после старта рантайма. */
+  setChat(chat: ChatController | undefined): void {
+    this.#chat = chat;
+  }
+
+  /** Подключить брокер подтверждений (#011). */
+  setApprovals(approvals: ApprovalDispatchPort | undefined): void {
+    this.#approvals = approvals;
+  }
+
+  /** Подключить привязку к сессии (#011/#024). */
+  setChatSession(chatSession: ChatSessionDispatchPort | undefined): void {
+    this.#chatSession = chatSession;
+  }
+
   dispose(): void {
     this.#disposed = true;
     this.#session.dispose();
@@ -173,13 +191,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     await dispatchWebviewMessage(message, {
-      chat: this.#options.chat,
+      chat: this.#chat,
       session: this.#session,
       state: () => this.#options.state(),
       post: (outgoing) => this.postMessage(outgoing),
       log: (line) => this.#options.log?.(line),
-      approvals: this.#options.approvals,
-      chatSession: this.#options.chatSession
+      approvals: this.#approvals,
+      chatSession: this.#chatSession
     });
   }
 

@@ -5,8 +5,14 @@ import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import type { DiffController } from './diff/diffController';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
-import { registerWorkspaceLifecycle } from './workspace/lifecycleController';
+import {
+  registerWorkspaceLifecycle,
+  type WorkspaceLifecycleHandle
+} from './workspace/lifecycleController';
 import type { LifecycleState } from './workspace/lifecycle';
+import { VscodeDiffEditor } from './diff/diffEditor';
+import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
+import type { ExtensionMessage } from './views/chatHtml';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -37,6 +43,8 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
 };
 
 let statusBarItem: vscode.StatusBarItem | undefined;
+let workspaceLifecycle: WorkspaceLifecycleHandle | undefined;
+let lastContextPack: unknown;
 
 /**
  * Менеджер сессий появляется после подключения моста DSH и воркспейса (#011).
@@ -134,18 +142,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
   );
 
-  // Lifecycle воркспейса (#011): смена папки переключает контекст и сессии с
-  // grace period; статус-бар показывает состояние.
-  context.subscriptions.push(
-    registerWorkspaceLifecycle({
-      context,
-      log: (line) => {
-        log.appendLine(line);
-      },
-      onStatus: (state) => updateStatusBar(state)
-    })
-  );
-
   const chatView = new ChatViewProvider({
     extensionUri: context.extensionUri,
     state: () => currentPanelState(),
@@ -160,6 +156,47 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
 
+  // Lifecycle воркспейса (#011): смена папки переключает контекст и сессии с
+  // grace period; компоненты активного рантайма подключаются к панели/командам.
+  const applyRuntimeHandle = (handle: { runtime: DshWorkspaceRuntime } | null): void => {
+    if (handle === null) {
+      chatView.setChat(undefined);
+      chatView.setApprovals(undefined);
+      chatView.setChatSession(undefined);
+      setSessionManager(null);
+      setDiffController(null);
+      lastContextPack = undefined;
+      return;
+    }
+    const runtime = handle.runtime;
+    chatView.setChat(runtime.chat);
+    chatView.setApprovals({
+      resolve: (id, decision) => runtime.approvals.resolve(id, decision),
+      showDiff: (id) => runtime.approvals.showDiff(id)
+    });
+    chatView.setChatSession({
+      draftChanged: (text) => runtime.chat.setDraft(text),
+      openNewSession: () => runtime.chat.requestNewSession(),
+      retryChat: () => runtime.chat.retry()
+    });
+    setSessionManager(runtime.sessions);
+    setDiffController(runtime.diff ?? null);
+    lastContextPack = runtime.contextPack;
+    log.appendLine(`воркспейс ${runtime.workspaceId}: рантайм подключён (${runtime.state})`);
+  };
+
+  workspaceLifecycle = registerWorkspaceLifecycle({
+    context,
+    log: (line) => {
+      log.appendLine(line);
+    },
+    onStatus: (state) => updateStatusBar(state),
+    postMessage: (message) => chatView.postMessage(message as ExtensionMessage),
+    createDiffEditor: () => new VscodeDiffEditor(context),
+    onRuntimeChange: (handle) => applyRuntimeHandle(handle)
+  });
+  context.subscriptions.push(workspaceLifecycle);
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       updateStatusBar();
@@ -168,7 +205,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
+  await workspaceLifecycle?.disposeAsync();
+  workspaceLifecycle = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
 }
@@ -218,6 +257,22 @@ function updateStatusBar(state?: LifecycleState): void {
 }
 
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.showContextInspector) {
+    const pack = lastContextPack as
+      | {
+          files?: readonly unknown[];
+          skills?: readonly unknown[];
+          rules?: readonly unknown[];
+          stats?: { durationMs?: number };
+        }
+      | undefined;
+    await vscode.window.showInformationMessage(
+      pack === undefined
+        ? 'DSH: контекст ещё не загружен (нет активного воркспейса).'
+        : `DSH контекст: файлов ${pack.files?.length ?? 0}, скилов ${pack.skills?.length ?? 0}, правил ${pack.rules?.length ?? 0} (${pack.stats?.durationMs ?? 0} мс).`
+    );
+    return;
+  }
   if (command === COMMAND_IDS.openSettings) {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'dsh');
     return;
