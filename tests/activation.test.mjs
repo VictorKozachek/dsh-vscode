@@ -25,7 +25,7 @@ function createFakeVscode({ settings = {} } = {}) {
     changeListeners: [],
     viewProviders: new Map(),
     settings,
-    workspaceFolders: [{ name: 'demo-project', index: 0 }]
+    workspaceFolders: [{ name: 'demo-project', index: 0, uri: { fsPath: '/demo-project' } }]
   };
 
   const fake = {
@@ -273,14 +273,12 @@ test('активация с папкой: рантайм подключает м
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
-  // Менеджер подключён: команда сессии не говорит «мост не подключён».
   await state.commands.get('dsh.newSession')();
   assert.ok(
     !state.messages.some((message) => /мост не подключён/.test(message)),
     'менеджер сессий подключён к командам'
   );
 
-  // Контекст загружен и отдаётся команде (#006/#011).
   await state.commands.get('dsh.showContextInspector')();
   assert.ok(
     state.messages.some((message) => /DSH контекст: файлов/.test(message)),
@@ -288,5 +286,50 @@ test('активация с папкой: рантайм подключает м
   );
 
   await extension.deactivate();
+  await rm(workspace, { recursive: true, force: true });
+});
+
+test('активация: рантайм #021 создаётся из настроек, без спавна при старте', () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.executablePath': 'dsh', 'dsh.profile': 'acp' }
+  });
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const runtime = extension.getDshRuntime();
+  assert.ok(runtime, 'рантайм создан');
+  assert.equal(runtime.state, 'stopped', 'без спавна при активации');
+  assert.equal(runtime.diagnostics.state, 'stopped');
+  assert.equal(state.errors.length, 0);
+  extension.deactivate();
+  assert.equal(extension.getDshRuntime(), undefined);
+});
+
+test('активация: рантайм #021 стартует из Extension Host, session.list/create, stop', async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dsh-activation-runtime-'));
+  const { fake, state } = createFakeVscode({
+    settings: {
+      'dsh.executablePath': path.resolve('tests/fixtures/fake-acp-runtime.mjs'),
+      'dsh.profile': 'acp'
+    }
+  });
+  state.workspaceFolders = [{ name: 'ws', index: 0, uri: { fsPath: workspace } }];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const runtime = extension.getDshRuntime();
+  assert.ok(runtime, 'рантайм создан в активации');
+  await runtime.start();
+  assert.equal(runtime.state, 'running', runtime.diagnostics.message);
+  assert.match(state.statusBar.text, /ACP 9\.9\.9/, 'версия ACP в статус-баре');
+
+  const listed = await runtime.request('session.list', { workspaceId: 'ws' });
+  assert.ok(Array.isArray(listed.sessions));
+  const created = await runtime.request('session.create', { workspaceId: 'ws' });
+  assert.match(created.sessionId, /sess-/);
+
+  await runtime.stop();
+  assert.equal(runtime.state, 'stopped');
+  extension.deactivate();
   await rm(workspace, { recursive: true, force: true });
 });
