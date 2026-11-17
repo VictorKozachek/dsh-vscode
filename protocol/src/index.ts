@@ -324,3 +324,7 @@ export function isDshMethod(value: string): value is DshMethod {
 export function isDshEvent(value: string): value is DshEvent {
   return (DSH_EVENTS as readonly string[]).includes(value);
 }
+
+// --- ACP-транспорт (#021) ---------------------------------------------------
+
+export * from './acp.js';

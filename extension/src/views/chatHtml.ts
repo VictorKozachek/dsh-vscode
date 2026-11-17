@@ -59,13 +59,52 @@ export interface NewSessionFormDto {
   readonly errors: Readonly<Record<string, string>>;
 }
 
+/** Решение пользователя по approval-запросу. */
+export type ApprovalDecisionDto = 'allow' | 'allow-session' | 'deny';
+
+/** Запрос подтверждения инструмента для инлайн-карточки. */
+export interface ApprovalRequestMessage {
+  readonly id: string;
+  readonly tool: string;
+  readonly kind: 'read' | 'write' | 'execute' | 'network';
+  readonly targetPath?: string | undefined;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly sessionId: string;
+  readonly createdAt: string;
+}
+
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessageDto }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCallDto }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResultDto };
+
+/** Состояние привязки чата к сессии (#024). */
+export interface ChatSessionDto {
+  readonly sessionId: string | null;
+  readonly title: string | null;
+  readonly model: string;
+  readonly preset: string;
+  readonly status: string;
+  /**
+   * Состояние истории: `replayed` — восстановлена из транскрипта,
+   * `empty` — сессия новая/пустая, `unavailable` — транскрипт недоступен.
+   */
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
+}
+
 /** Сообщения WebView → extension. */
 export type WebviewMessage =
   | { readonly kind: 'ready' }
   | { readonly kind: 'stop' }
   | { readonly kind: 'sendMessage'; readonly text: string }
   | { readonly kind: 'newSessionSubmit'; readonly values: NewSessionValuesDto }
-  | { readonly kind: 'newSessionCancel' };
+  | { readonly kind: 'newSessionCancel' }
+  | { readonly kind: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionDto }
+  | { readonly kind: 'approvalShowDiff'; readonly id: string }
+  | { readonly kind: 'draftChanged'; readonly text: string }
+  | { readonly kind: 'openNewSession' }
+  | { readonly kind: 'retryChat' };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
 export const WEBVIEW_MESSAGE_TYPES = [
@@ -73,7 +112,12 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'sendMessage',
   'stop',
   'newSessionSubmit',
-  'newSessionCancel'
+  'newSessionCancel',
+  'approvalResolve',
+  'approvalShowDiff',
+  'draftChanged',
+  'openNewSession',
+  'retryChat'
 ] as const;
 
 /** Статус потока ответа в панели. */
@@ -108,7 +152,12 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatCancelled',
   'newSessionOpen',
   'newSessionUpdate',
-  'newSessionClose'
+  'newSessionClose',
+  'approvalRequest',
+  'approvalResolved',
+  'chatSession',
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Сообщения extension → WebView. */
@@ -125,7 +174,12 @@ export type ExtensionMessage =
   | { readonly type: 'chatCancelled' }
   | { readonly type: 'newSessionOpen'; readonly form: NewSessionFormDto }
   | { readonly type: 'newSessionUpdate'; readonly form: NewSessionFormDto }
-  | { readonly type: 'newSessionClose' };
+  | { readonly type: 'newSessionClose' }
+  | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto }
+  | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
@@ -154,6 +208,28 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   if (type === 'newSessionSubmit') {
     const values = parseNewSessionValues(record['values']);
     return values === null ? null : { kind: 'newSessionSubmit', values };
+  }
+  if (type === 'approvalResolve') {
+    const id = typeof record['id'] === 'string' ? record['id'] : '';
+    const decision = record['decision'];
+    if (id === '' || (decision !== 'allow' && decision !== 'allow-session' && decision !== 'deny')) {
+      return null;
+    }
+    return { kind: 'approvalResolve', id, decision };
+  }
+  if (type === 'approvalShowDiff') {
+    const id = typeof record['id'] === 'string' ? record['id'] : '';
+    return id === '' ? null : { kind: 'approvalShowDiff', id };
+  }
+  if (type === 'draftChanged') {
+    const text = typeof record['text'] === 'string' ? record['text'] : '';
+    return { kind: 'draftChanged', text };
+  }
+  if (type === 'openNewSession') {
+    return { kind: 'openNewSession' };
+  }
+  if (type === 'retryChat') {
+    return { kind: 'retryChat' };
   }
   return null;
 }
@@ -369,9 +445,20 @@ export class ChatSession {
     state: () => Omit<ChatPanelStateDto, 'status'>,
     emit: (message: ExtensionMessage) => void = () => undefined
   ): ExtensionMessage[] {
-    if (message.kind === 'newSessionSubmit' || message.kind === 'newSessionCancel') {
+    // New Session (#023) обслуживает NewSessionController, подтверждения —
+    // ApprovalBroker (#009), привязку к сессии — ChatController (#024).
+    if (
+      message.kind === 'newSessionSubmit' ||
+      message.kind === 'newSessionCancel' ||
+      message.kind === 'approvalResolve' ||
+      message.kind === 'approvalShowDiff' ||
+      message.kind === 'draftChanged' ||
+      message.kind === 'openNewSession' ||
+      message.kind === 'retryChat'
+    ) {
       return [];
     }
+
     if (message.kind === 'ready') {
       const outgoing: ExtensionMessage[] = [
         { type: 'state', state: { ...state(), status: this.#status } }

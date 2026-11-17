@@ -19,6 +19,11 @@ const ru = {
   'composer.placeholder': 'Спросите DSH…',
   'composer.hint': 'Enter — отправить, Shift+Enter — новая строка',
   'composer.send': 'Отправить',
+  'composer.createSession': 'Создать сессию',
+  'header.session': 'Сессия',
+  'header.noSession': 'нет активной сессии',
+  'chat.historyUnavailable': 'История недоступна — начинаем с чистого листа',
+  'chat.retry': 'Повторить',
   'log.label': 'Лента сообщений',
   'message.you': 'Вы',
   'message.assistant': 'DSH',
@@ -63,7 +68,13 @@ const ru = {
   'newSession.error.sandboxUnknown': 'Неизвестный sandbox-режим',
   'newSession.error.dangerConfirm': 'danger-full-access требует явного подтверждения',
   'newSession.error.approvalUnknown': 'Неизвестная политика подтверждений',
-  'newSession.error.titleTooLong': 'Слишком длинный заголовок'
+  'newSession.error.titleTooLong': 'Слишком длинный заголовок',
+  'approval.title': 'Требуется подтверждение',
+  'approval.kind': 'Операция',
+  'approval.allow': 'Разрешить',
+  'approval.allowSession': 'Разрешить для этой сессии',
+  'approval.deny': 'Отклонить',
+  'approval.showDiff': 'Показать diff'
 } as const;
 
 const en: Readonly<Record<keyof typeof ru, string>> = {
@@ -78,6 +89,11 @@ const en: Readonly<Record<keyof typeof ru, string>> = {
   'composer.placeholder': 'Ask DSH…',
   'composer.hint': 'Enter — send, Shift+Enter — new line',
   'composer.send': 'Send',
+  'composer.createSession': 'Create session',
+  'header.session': 'Session',
+  'header.noSession': 'no active session',
+  'chat.historyUnavailable': 'History unavailable — starting from a clean slate',
+  'chat.retry': 'Retry',
   'log.label': 'Message log',
   'message.you': 'You',
   'message.assistant': 'DSH',
@@ -122,7 +138,13 @@ const en: Readonly<Record<keyof typeof ru, string>> = {
   'newSession.error.sandboxUnknown': 'Unknown sandbox mode',
   'newSession.error.dangerConfirm': 'danger-full-access requires explicit confirmation',
   'newSession.error.approvalUnknown': 'Unknown approval policy',
-  'newSession.error.titleTooLong': 'Title is too long'
+  'newSession.error.titleTooLong': 'Title is too long',
+  'approval.title': 'Approval required',
+  'approval.kind': 'Operation',
+  'approval.allow': 'Allow',
+  'approval.allowSession': 'Allow for this session',
+  'approval.deny': 'Deny',
+  'approval.showDiff': 'Show diff'
 };
 
 /** Ключ строки перевода. */

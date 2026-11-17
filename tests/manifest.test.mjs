@@ -28,12 +28,16 @@ const expectedCommands = {
  * id → заголовок. Сейчас — GC реестра воркспейсов (#003).
  */
 const extraCommands = {
-  'dsh.pruneWorkspaces': 'DSH: Prune Workspaces'
+  'dsh.pruneWorkspaces': 'DSH: Prune Workspaces',
+  // #010: откат последней правки DiffService.
+  'dsh.revertLastEdit': 'DSH: Revert Last Edit'
 };
 
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */
 const expectedSettings = {
   'dsh.executablePath': { type: 'string', default: 'dsh' },
+  // Не из §9: профиль рантайма (#021), по умолчанию automation-only ACP.
+  'dsh.profile': { type: 'string', default: 'acp' },
   'dsh.autoStart': { type: 'boolean', default: true },
   'dsh.defaultModel': { type: 'string', default: 'deepseek-chat' },
   'dsh.sandboxMode': {
@@ -51,6 +55,7 @@ const expectedSettings = {
   'dsh.workspace.registryPath': { type: 'string', default: '~/.dsh/workspaces' },
   // Не из §9: срок хранения записей реестра воркспейсов (#003), 90 дней.
   'dsh.workspace.keepDays': { type: 'number', default: 90 },
+  'dsh.models': { type: 'array', default: [] },
   'dsh.kanban.enabled': { type: 'boolean', default: false },
   'dsh.telemetry.enabled': { type: 'boolean', default: false }
 };

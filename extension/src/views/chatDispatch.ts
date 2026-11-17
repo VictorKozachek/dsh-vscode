@@ -31,6 +31,19 @@ export interface NewSessionDispatchPort {
   cancel(): void;
 }
 
+/** Порт брокера подтверждений (#009): решения из инлайн-карточки. */
+export interface ApprovalDispatchPort {
+  resolve(id: string, decision: 'allow' | 'allow-session' | 'deny'): boolean;
+  showDiff(id: string): boolean;
+}
+
+/** Порт привязки чата к сессии (#024). */
+export interface ChatSessionDispatchPort {
+  draftChanged(text: string): void;
+  openNewSession(): void;
+  retryChat(): void;
+}
+
 /** Зависимости диспетчера. */
 export interface ChatDispatchOptions {
   /** Потоковый чат (#008); без него — эхо-режим каркаса (#005). */
@@ -41,6 +54,10 @@ export interface ChatDispatchOptions {
   readonly log?: ((line: string) => void) | undefined;
   /** Форма New Session (#023). */
   readonly newSession?: NewSessionDispatchPort | undefined;
+  /** Брокер подтверждений (#009); без него approval-сообщения игнорируются. */
+  readonly approvals?: ApprovalDispatchPort | undefined;
+  /** Привязка чата к сессии (#024). */
+  readonly chatSession?: ChatSessionDispatchPort | undefined;
 }
 
 /**
@@ -70,6 +87,31 @@ export async function dispatchWebviewMessage(
     return;
   }
 
+  // Инлайн-подтверждения (#009): решение из карточки уходит в брокер.
+  if (message.kind === 'approvalResolve') {
+    const handled = options.approvals?.resolve(message.id, message.decision) ?? false;
+    if (!handled) {
+      options.log?.(`панель DSH: approval-запрос ${message.id} уже не актуален`);
+    }
+    return;
+  }
+  if (message.kind === 'approvalShowDiff') {
+    options.approvals?.showDiff(message.id);
+    return;
+  }
+  if (message.kind === 'draftChanged') {
+    options.chatSession?.draftChanged(message.text);
+    return;
+  }
+  if (message.kind === 'openNewSession') {
+    options.chatSession?.openNewSession();
+    return;
+  }
+  if (message.kind === 'retryChat') {
+    options.chatSession?.retryChat();
+    return;
+  }
+
   const chat = options.chat;
   if (chat !== undefined) {
     switch (message.kind) {
@@ -92,6 +134,8 @@ export async function dispatchWebviewMessage(
           await post(outgoing);
         }
         await post({ type: 'chatStatus', status: chat.status });
+        // WebView готов: отдаём начальную привязку к сессии (#024).
+        chat.syncNow?.();
         return;
       }
     }

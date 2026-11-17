@@ -31,13 +31,48 @@ export interface NewSessionFormDto {
   readonly errors: Readonly<Record<string, string>>;
 }
 
+/** Решение по approval-запросу. */
+export type ApprovalDecisionKind = 'allow' | 'allow-session' | 'deny';
+
+/** Запрос подтверждения инструмента. */
+export interface ApprovalRequestMessage {
+  readonly id: string;
+  readonly tool: string;
+  readonly kind: 'read' | 'write' | 'execute' | 'network';
+  readonly targetPath?: string | undefined;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly sessionId: string;
+  readonly createdAt: string;
+}
+
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessage }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCall }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResult };
+
+/** Состояние привязки чата к сессии (#024). */
+export interface ChatSessionDto {
+  readonly sessionId: string | null;
+  readonly title: string | null;
+  readonly model: string;
+  readonly preset: string;
+  readonly status: string;
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
+}
+
 /** Сообщения WebView → extension host. */
 export const WEBVIEW_MESSAGE_TYPES = [
   'ready',
   'sendMessage',
   'stop',
   'newSessionSubmit',
-  'newSessionCancel'
+  'newSessionCancel',
+  'approvalResolve',
+  'approvalShowDiff',
+  'draftChanged',
+  'openNewSession',
+  'retryChat'
 ] as const;
 
 /** Сообщения extension host → WebView. */
@@ -54,7 +89,12 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatCancelled',
   'newSessionOpen',
   'newSessionUpdate',
-  'newSessionClose'
+  'newSessionClose',
+  'approvalRequest',
+  'approvalResolved',
+  'chatSession',
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Статус потока ответа. */
@@ -103,7 +143,12 @@ export type WebviewToExtension =
   | { readonly type: 'sendMessage'; readonly text: string }
   | { readonly type: 'stop' }
   | { readonly type: 'newSessionSubmit'; readonly values: NewSessionValuesDto }
-  | { readonly type: 'newSessionCancel' };
+  | { readonly type: 'newSessionCancel' }
+  | { readonly type: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionKind }
+  | { readonly type: 'approvalShowDiff'; readonly id: string }
+  | { readonly type: 'draftChanged'; readonly text: string }
+  | { readonly type: 'openNewSession' }
+  | { readonly type: 'retryChat' };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =
@@ -119,4 +164,9 @@ export type ExtensionToWebview =
   | { readonly type: 'chatCancelled' }
   | { readonly type: 'newSessionOpen'; readonly form: NewSessionFormDto }
   | { readonly type: 'newSessionUpdate'; readonly form: NewSessionFormDto }
-  | { readonly type: 'newSessionClose' };
+  | { readonly type: 'newSessionClose' }
+  | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionKind }
+  | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };

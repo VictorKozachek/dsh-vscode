@@ -81,6 +81,11 @@
         "command": "dsh.pruneWorkspaces",
         "title": "Prune Workspaces",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.revertLastEdit",
+        "title": "Revert Last Edit",
+        "category": "DSH"
       }
     ],
     "configuration": {
@@ -90,6 +95,11 @@
           "type": "string",
           "default": "dsh",
           "description": "Путь к бинарю DSH (по умолчанию — `dsh` из PATH)."
+        },
+        "dsh.profile": {
+          "type": "string",
+          "default": "acp",
+          "description": "Профиль DSH-рантайма: acp (automation-only JSON-RPC stdio) или web (HTTP GUI)."
         },
         "dsh.autoStart": {
           "type": "boolean",
@@ -162,6 +172,14 @@
           "type": "boolean",
           "default": false,
           "description": "Телеметрия (по умолчанию выключена)."
+        },
+        "dsh.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Дополнительные модели профиля для формы New Session."
         }
       }
     }

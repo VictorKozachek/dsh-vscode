@@ -1,3 +1,6 @@
+import { readdir } from 'node:fs/promises';
+import path from 'node:path';
+
 import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
@@ -10,7 +13,10 @@ import {
   type NewSessionValues,
   type RememberedNewSession
 } from './views/newSessionModel';
+import type { DiffController } from './diff/diffController';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
+import { AcpRuntime } from './runtime/acpRuntime';
+import type { RuntimeState } from './runtime/acpRuntime';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -43,6 +49,17 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
 let statusBarItem: vscode.StatusBarItem | undefined;
 
 /**
+ * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
+ * отдаётся #011 для проводки в lifecycle/SessionManager.
+ */
+let dshRuntime: AcpRuntime | undefined;
+
+/** Экземпляр рантайма для потребителей (#011) и тестов активации. */
+export function getDshRuntime(): AcpRuntime | undefined {
+  return dshRuntime;
+}
+
+/**
  * Менеджер сессий появляется после подключения моста DSH и воркспейса (#011).
  * До этого команды сессий честно сообщают, что мост не подключён.
  */
@@ -55,6 +72,20 @@ export function setSessionManager(manager: SessionManager | null): void {
 
 /** Контроллер формы New Session (#023); создаётся вместе с панелью. */
 let newSessionController: NewSessionController | null = null;
+
+/** Команда отката последней правки DiffService (#010). */
+export const REVERT_LAST_EDIT_COMMAND = 'dsh.revertLastEdit';
+
+/**
+ * Контроллер правок появляется вместе с воркспейсом (#011). До этого команда
+ * отката честно сообщает, что откатывать нечего.
+ */
+let diffController: DiffController | null = null;
+
+/** Подключить контроллер правок (вызывает #011 после выбора воркспейса). */
+export function setDiffController(controller: DiffController | null): void {
+  diffController = controller;
+}
 
 /** Команды, которые обслуживает SessionManager (не заглушки). */
 const SESSION_COMMANDS = new Set<string>([
@@ -118,6 +149,18 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand(REVERT_LAST_EDIT_COMMAND, async () => {
+      if (diffController === null) {
+        await vscode.window.showInformationMessage(
+          'DSH: Revert Last Edit — откатывать нечего (нет активного воркспейса).'
+        );
+        return;
+      }
+      await diffController.revertLastEdit();
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand(PRUNE_WORKSPACES_COMMAND, () => pruneWorkspaces())
   );
 
@@ -127,10 +170,34 @@ export function activate(context: vscode.ExtensionContext): void {
   newSessionController = new NewSessionController({
     // Пресеты рантайма появятся вместе с #021; описание не задаём, чтобы
     // WebView показал локализованный fallback, а не русский текст в en-UI.
-    getPresets: async () => [{ id: 'standard', title: 'standard' }],
+    getPresets: async () => {
+      // Роли регистрируются в профиле DSH (~/.dsh/.agent-presets/<role>).
+      const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? '';
+      const presets: { id: string; title: string }[] = [
+        { id: 'standard', title: 'standard' }
+      ];
+      try {
+        const entries = await readdir(path.join(home, '.dsh', '.agent-presets'), {
+          withFileTypes: true
+        });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            presets.push({ id: entry.name, title: entry.name });
+          }
+        }
+      } catch {
+        // профиль без ролей — только standard
+      }
+      return presets;
+    },
     getModels: async () => {
       const configuration = vscode.workspace.getConfiguration('dsh');
-      return [configuration.get<string>('defaultModel') ?? 'deepseek-chat'];
+      const configured = configuration.get<string[]>('models');
+      const models = [
+        configuration.get<string>('defaultModel') ?? 'deepseek-chat',
+        ...(Array.isArray(configured) ? configured : [])
+      ];
+      return [...new Set(models.filter((model) => typeof model === 'string' && model !== ''))];
     },
     create: async (options) => {
       const manager = sessionManager;
@@ -201,6 +268,23 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
 
+  const folderPath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
+  if (typeof folderPath === 'string' && folderPath !== '') {
+    const configuration = vscode.workspace.getConfiguration('dsh');
+    dshRuntime = new AcpRuntime({
+      workspacePath: folderPath,
+      executablePath: configuration.get<string>('executablePath') ?? 'dsh',
+      profile: configuration.get<string>('profile') ?? 'acp',
+      homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
+      logger: (line) => {
+        log.appendLine(line);
+      },
+      onStateChanged: (state) => {
+        updateStatusBarRuntime(state);
+      }
+    });
+  }
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       updateStatusBar();
@@ -210,6 +294,8 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  void dshRuntime?.dispose();
+  dshRuntime = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
 }
@@ -238,6 +324,30 @@ function workspaceName(): string {
     return folder.name;
   }
   return vscode.workspace.name ?? 'no workspace';
+}
+
+/**
+ * Статус-бар из состояния DSH-рантайма (#021): после реального старта
+ * показывает версии dsh/ACP (критерий «версия … в статусе»).
+ */
+function updateStatusBarRuntime(state: RuntimeState): void {
+  if (statusBarItem === undefined) {
+    return;
+  }
+  if (state === 'running') {
+    const version = dshRuntime?.version ?? {};
+    const parts = ['ready'];
+    if (version.dsh !== undefined) {
+      parts.push(`dsh ${version.dsh}`);
+    }
+    if (version.acp !== undefined) {
+      parts.push(`ACP ${version.acp}`);
+    }
+    statusBarItem.text = `DSH · ${workspaceName()} · ${parts.join(' · ')}`;
+  } else {
+    statusBarItem.text = `DSH · ${workspaceName()} · ${state}`;
+  }
+  statusBarItem.show();
 }
 
 function updateStatusBar(): void {
