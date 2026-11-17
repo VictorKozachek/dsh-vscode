@@ -89,6 +89,8 @@ export interface AcpRuntimeOptions {
   readonly restartDelayFactor?: number | undefined;
   readonly restartMaxDelayMs?: number | undefined;
   readonly maxRestartAttempts?: number | undefined;
+  /** Сколько рантайм должен прожить, чтобы счётчик рестартов сбросился. */
+  readonly restartStableMs?: number | undefined;
   /** Подмена поиска (тесты). */
   readonly discovery?: Pick<
     NonNullable<Parameters<typeof discoverRuntime>[0]>,
@@ -115,6 +117,7 @@ const DEFAULT_RESTART_INITIAL_MS = 500;
 const DEFAULT_RESTART_FACTOR = 2;
 const DEFAULT_RESTART_MAX_MS = 10_000;
 const DEFAULT_MAX_RESTART_ATTEMPTS = 5;
+const DEFAULT_RESTART_STABLE_MS = 30_000;
 
 /**
  * Рантайм DSH поверх ACP stdio. Реализует порт `DshBridgePort` (#004/#007).
@@ -134,6 +137,7 @@ export class AcpRuntime {
   #agentInfo: { name?: string; version?: string } | undefined;
   #dshVersion: string | undefined;
   #attempts = 0;
+  #startedAt = 0;
   #stopping = false;
   #restartTimer: NodeJS.Timeout | undefined;
   #turnCounter = 0;
@@ -237,19 +241,7 @@ export class AcpRuntime {
     }
 
     const killTree = (signal: NodeJS.Signals): void => {
-      try {
-        if (process.platform !== 'win32' && child.pid !== undefined) {
-          process.kill(-child.pid, signal);
-          return;
-        }
-      } catch {
-        // группы может не быть — падаем на direct child
-      }
-      try {
-        child.kill(signal);
-      } catch {
-        // процесс уже умер
-      }
+      this.#killTree(child, signal);
     };
 
     await new Promise<void>((resolve) => {
@@ -492,7 +484,9 @@ export class AcpRuntime {
       const info = (initialized as { agentInfo?: { name?: string; version?: string } }).agentInfo;
       this.#agentInfo = info === undefined ? undefined : { ...info };
       this.#dshVersion = await detectDshVersion(command.command);
-      this.#attempts = 0;
+      // #attempts НЕ сбрасываем здесь: иначе crash loop после initialize
+      // никогда не достигает лимита. Сброс — после стабильного аптайма.
+      this.#startedAt = Date.now();
       this.#instructions = undefined;
       this.#lastError = undefined;
       this.#setState('running');
@@ -500,12 +494,26 @@ export class AcpRuntime {
         `ACP: рантайм готов (dsh ${this.#dshVersion ?? 'version?'}, acp ${info?.version ?? '?'})`
       );
     } catch (error) {
+      if (this.#stopping || this.#disposed) {
+        // Остановка во время initialize — это не failed.
+        this.#peer?.dispose(new AcpError('ACP-рантайм остановлен'));
+        this.#peer = undefined;
+        const current = this.#child;
+        this.#child = undefined;
+        if (current !== undefined) {
+          this.#killTree(current, 'SIGKILL');
+        }
+        this.#setState('stopped');
+        return;
+      }
       this.#fail(`initialize не удался: ${describeError(error)}`);
     }
   }
 
   #handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     const wasStopping = this.#stopping;
+    const uptime = this.#startedAt === 0 ? 0 : Date.now() - this.#startedAt;
+    this.#startedAt = 0;
     this.#peer?.dispose(new AcpError(`ACP-процесс завершился (${String(code ?? signal)})`));
     this.#peer = undefined;
     this.#child = undefined;
@@ -515,6 +523,11 @@ export class AcpRuntime {
     }
     if (this.#state === 'failed') {
       return;
+    }
+    const stableMs = this.#options.restartStableMs ?? DEFAULT_RESTART_STABLE_MS;
+    if (uptime >= stableMs) {
+      // Долго работал — считаем прошлые падения историей.
+      this.#attempts = 0;
     }
     const maxAttempts = this.#options.maxRestartAttempts ?? DEFAULT_MAX_RESTART_ATTEMPTS;
     if (this.#attempts >= maxAttempts) {
@@ -614,11 +627,26 @@ export class AcpRuntime {
     this.#peer?.dispose(new AcpError(message));
     this.#peer = undefined;
     if (child !== undefined) {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // уже мёртв
+      // Гасим всю группу: при неудачном initialize npx-обёртка не должна
+      // оставить dsh-внука сиротой.
+      this.#killTree(child, 'SIGKILL');
+    }
+  }
+
+  /** SIGTERM/SIGKILL всей группе (POSIX), fallback — direct child. */
+  #killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+    try {
+      if (process.platform !== 'win32' && child.pid !== undefined) {
+        process.kill(-child.pid, signal);
+        return;
       }
+    } catch {
+      // группы нет — гасим direct child
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // уже мёртв
     }
   }
 

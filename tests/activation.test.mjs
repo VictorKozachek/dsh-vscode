@@ -275,6 +275,7 @@ test('активация: рантайм #021 стартует из Extension Ho
   assert.ok(runtime, 'рантайм создан в активации');
   await runtime.start();
   assert.equal(runtime.state, 'running', runtime.diagnostics.message);
+  assert.match(state.statusBar.text, /ACP 9\.9\.9/, 'версия ACP в статус-баре');
 
   const listed = await runtime.request('session.list', { workspaceId: 'ws' });
   assert.ok(Array.isArray(listed.sessions));

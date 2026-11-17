@@ -76,14 +76,30 @@ lines.on('line', (line) => {
   }
 
   switch (method) {
-    case 'initialize':
-      respond(message.id, {
-        protocolVersion: 1,
-        agentInfo: { name: 'fake-acp', version: '9.9.9' },
-        agentCapabilities: { sessionCapabilities: { list: {}, resume: {}, close: {} } },
-        authMethods: []
-      });
+    case 'initialize': {
+      if (process.env.FAKE_ACP_INIT_ERROR === '1') {
+        respondError(message.id, -32000, 'initialize failed');
+        return;
+      }
+      const sendInit = () => {
+        respond(message.id, {
+          protocolVersion: 1,
+          agentInfo: { name: 'fake-acp', version: '9.9.9' },
+          agentCapabilities: { sessionCapabilities: { list: {}, resume: {}, close: {} } },
+          authMethods: []
+        });
+        if (process.env.FAKE_ACP_CRASH_AFTER_INIT === '1') {
+          setTimeout(() => process.exit(1), 5);
+        }
+      };
+      const delay = Number(process.env.FAKE_ACP_INIT_DELAY ?? '0');
+      if (Number.isFinite(delay) && delay > 0) {
+        setTimeout(sendInit, delay);
+      } else {
+        sendInit();
+      }
       return;
+    }
 
     case 'session/list': {
       const crashFile = process.env.FAKE_ACP_CRASH_FILE;

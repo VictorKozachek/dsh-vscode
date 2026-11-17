@@ -245,3 +245,44 @@ test('stop во время discovery отменяет запуск (нет orpha
   assert.equal(runtime.state, 'stopped');
   assert.equal(runtime.processId, undefined);
 });
+
+test('backoff: падения после initialize доходят до failed с растущими задержками', async () => {
+  const { runtime, lines } = await harness(
+    { FAKE_ACP_CRASH_AFTER_INIT: '1' },
+    {
+      restartInitialDelayMs: 20,
+      restartDelayFactor: 2,
+      maxRestartAttempts: 2,
+      restartStableMs: 10_000
+    }
+  );
+  await runtime.start();
+  await waitFor(() => runtime.state === 'failed', { label: 'failed после crash loop', timeoutMs: 5000 });
+
+  const text = lines.join('\n');
+  assert.match(text, /перезапуск через 20 мс \(попытка 1\/2\)/);
+  assert.match(text, /перезапуск через 40 мс \(попытка 2\/2\)/);
+  assert.match(text, /попытки перезапуска исчерпаны/);
+});
+
+test('initialize error: дерево процессов гасится (внук не остаётся сиротой)', async () => {
+  const pidFile = path.join(tmpRoot, 'init-error-grandchild.pid');
+  const { runtime } = await harness({
+    FAKE_ACP_INIT_ERROR: '1',
+    FAKE_ACP_GRANDCHILD_PID_FILE: pidFile
+  });
+  await runtime.start();
+  assert.equal(runtime.state, 'failed');
+  await waitFor(() => existsSync(pidFile), { label: 'pid внука' });
+  const pid = Number((await readFile(pidFile, 'utf8')).trim());
+  await waitFor(() => !isAlive(pid), { label: 'внук завершён после initialize error' });
+});
+
+test('stop во время initialize даёт stopped, а не failed', async () => {
+  const { runtime } = await harness({ FAKE_ACP_INIT_DELAY: '400' });
+  const starting = runtime.start();
+  await sleep(80);
+  await runtime.stop();
+  await starting;
+  assert.equal(runtime.state, 'stopped');
+});
