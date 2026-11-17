@@ -6,6 +6,20 @@
  * `tests/chat-view.test.mjs`.
  */
 
+/** Решение по approval-запросу. */
+export type ApprovalDecisionKind = 'allow' | 'allow-session' | 'deny';
+
+/** Запрос подтверждения инструмента. */
+export interface ApprovalRequestMessage {
+  readonly id: string;
+  readonly tool: string;
+  readonly kind: 'read' | 'write' | 'execute' | 'network';
+  readonly targetPath?: string | undefined;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly sessionId: string;
+  readonly createdAt: string;
+}
+
 /** Запись ленты в порядке поступления (#024). */
 export type FeedRecordDto =
   | { readonly kind: 'message'; readonly message: ChatMessage }
@@ -27,6 +41,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'ready',
   'sendMessage',
   'stop',
+  'approvalResolve',
+  'approvalShowDiff',
   'draftChanged',
   'openNewSession',
   'retryChat'
@@ -44,6 +60,8 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolResult',
   'chatDone',
   'chatCancelled',
+  'approvalRequest',
+  'approvalResolved',
   'chatSession',
   'composerDraft',
   'replaceFeed'
@@ -94,6 +112,8 @@ export type WebviewToExtension =
   | { readonly type: 'ready' }
   | { readonly type: 'sendMessage'; readonly text: string }
   | { readonly type: 'stop' }
+  | { readonly type: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionKind }
+  | { readonly type: 'approvalShowDiff'; readonly id: string }
   | { readonly type: 'draftChanged'; readonly text: string }
   | { readonly type: 'openNewSession' }
   | { readonly type: 'retryChat' };
@@ -110,6 +130,8 @@ export type ExtensionToWebview =
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResult }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
+  | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionKind }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
   | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
