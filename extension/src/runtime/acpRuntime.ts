@@ -68,6 +68,16 @@ export interface RuntimeDiagnostics {
 }
 
 /** Настройки рантайма. */
+/** Handle ACP terminal client: вывод по мере выполнения + kill/release. */
+export interface TerminalClientHandle {
+  readonly status: string;
+  output(): { readonly text: string; readonly truncated: boolean };
+  waitForExit(): Promise<number | undefined>;
+  kill(): void;
+  release(): void;
+  readonly error?: string | undefined;
+}
+
 export interface AcpRuntimeOptions {
   /** cwd воркспейса и `cwd` для ACP-сессий. */
   readonly workspacePath: string;
@@ -110,12 +120,9 @@ export interface AcpRuntimeOptions {
         readonly sessionId: string;
         readonly command: string;
         readonly cwd: string | undefined;
-      }) => Promise<{
-        readonly output: string;
-        readonly exitCode: number | undefined;
-        readonly truncated?: boolean;
-        readonly error?: string | undefined;
-      }>)
+        readonly env?: Readonly<Record<string, string>> | undefined;
+        readonly maxOutputBytes?: number | undefined;
+      }) => Promise<TerminalClientHandle>)
     | undefined;
   readonly permissionHandler?:
     | ((request: {
@@ -160,10 +167,7 @@ export class AcpRuntime {
   #disposed = false;
   /** Активный ход на сессию: ACP не присылает turnId в session/update. */
   #activeTurns = new Map<string, string>();
-  #terminals = new Map<
-    string,
-    { output: string; exitCode: number | undefined; truncated: boolean; error?: string }
-  >();
+  #terminals = new Map<string, TerminalClientHandle>();
   #terminalCounter = 0;
   /** Поколение запуска: stop() инвалидирует незавершённый discovery. */
   #startToken = 0;
@@ -499,7 +503,10 @@ export class AcpRuntime {
     try {
       const initialized = await peer.request(
         'initialize',
-        { protocolVersion: 1, clientCapabilities: {} },
+        {
+          protocolVersion: 1,
+          clientCapabilities: { terminal: true, fs: { readTextFile: false, writeTextFile: false } }
+        },
         { timeoutMs: this.#options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS }
       );
       const info = (initialized as { agentInfo?: { name?: string; version?: string } }).agentInfo;
@@ -629,15 +636,22 @@ export class AcpRuntime {
       const full = [command, ...args].join(' ').trim();
       const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
       const cwd = typeof params['cwd'] === 'string' ? params['cwd'] : undefined;
-      const result = await client({ sessionId, command: full, cwd });
+      const env =
+        typeof params['env'] === 'object' && params['env'] !== null
+          ? (params['env'] as Record<string, string>)
+          : undefined;
+      const limit =
+        typeof params['outputByteLimit'] === 'number' ? params['outputByteLimit'] : undefined;
+      const handle = await client({
+        sessionId,
+        command: full,
+        cwd,
+        ...(env === undefined ? {} : { env }),
+        ...(limit === undefined ? {} : { maxOutputBytes: limit })
+      });
       this.#terminalCounter += 1;
       const id = `term-${String(this.#terminalCounter)}`;
-      this.#terminals.set(id, {
-        output: result.output,
-        exitCode: result.exitCode,
-        truncated: result.truncated === true,
-        ...(result.error === undefined ? {} : { error: result.error })
-      });
+      this.#terminals.set(id, handle);
       return { terminalId: id };
     }
     const terminal = this.#terminals.get(terminalId);
@@ -645,16 +659,21 @@ export class AcpRuntime {
       throw new AcpError(`терминал ${terminalId} не найден`);
     }
     switch (method) {
-      case 'terminal/output':
+      case 'terminal/output': {
+        const output = terminal.output();
         return {
-          output: terminal.output,
-          truncated: terminal.truncated,
+          output: output.text,
+          truncated: output.truncated,
           ...(terminal.error === undefined ? {} : { error: terminal.error })
         };
+      }
       case 'terminal/wait_for_exit':
-        return { exitCode: terminal.exitCode };
+        return { exitCode: await terminal.waitForExit() };
       case 'terminal/kill':
+        terminal.kill();
+        return {};
       case 'terminal/release':
+        terminal.release();
         this.#terminals.delete(terminalId);
         return {};
       default:

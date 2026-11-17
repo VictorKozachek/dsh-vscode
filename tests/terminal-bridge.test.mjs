@@ -107,11 +107,45 @@ test('отмена команды и отсутствие shell integration', as
   await new Promise((resolve) => setTimeout(resolve, 10));
   bridge.cancel();
   const cancelled = await running;
-  assert.equal(cancelled.status, 'error');
+  assert.equal(cancelled.status, 'cancelled');
   assert.match(cancelled.error ?? '', /отменена/);
 
   const { bridge: noShell, calls } = harness({ shell: false });
   const result = await noShell.run({ sessionId: 's', command: 'echo' });
   assert.equal(result.status, 'no-shell-integration');
   assert.equal(calls.execute.length, 0);
+});
+
+test('start: handle возвращается сразу, output отдаёт частичный вывод, kill останавливает', async () => {
+  const calls = { disposed: 0 };
+  const bridge = new TerminalBridge({
+    timeoutMs: 5000,
+    approval: { request: async () => 'allow' },
+    createSession: () => ({
+      shellIntegrationAvailable: true,
+      execute() {
+        return {
+          async *read() {
+            yield 'first\n';
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            yield 'second\n';
+          },
+          exitCode: new Promise((resolve) => setTimeout(() => resolve(0), 80))
+        };
+      },
+      dispose() {
+        calls.disposed += 1;
+      }
+    })
+  });
+
+  const started = Date.now();
+  const handle = await bridge.start({ sessionId: 's', command: 'long' });
+  assert.ok(Date.now() - started < 80, 'start не ждёт завершения команды');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(handle.output().text, /first/);
+  handle.kill();
+  await handle.waitForExit();
+  assert.equal(handle.status, 'cancelled');
+  assert.equal(calls.disposed, 1);
 });

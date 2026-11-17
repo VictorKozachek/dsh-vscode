@@ -1,15 +1,16 @@
 /**
- * Терминал-мост (#015): выполнение команд агента через shell integration.
+ * Терминал-мост (#015): ACP terminal client — асинхронный handle.
  *
- * Безопасность: каждая команда проходит approval-порт (#009); без allow
- * команда не выполняется. Вывод буферизуется с лимитом, есть таймаут и
- * отмена. Чистые порты — тесты `tests/terminal-bridge.test.mjs`.
+ * `start()` сразу возвращает handle: `output()` отдаёт текущий буфер,
+ * `waitForExit()` ждёт завершения, `kill()/release()` останавливают процесс.
+ * Каждая команда проходит approval-порт (#009); без allow не выполняется.
  */
 
 export type TerminalRunStatus =
-  | 'ok'
+  | 'started'
   | 'denied'
   | 'timeout'
+  | 'cancelled'
   | 'no-shell-integration'
   | 'error';
 
@@ -23,9 +24,7 @@ export interface TerminalRunResult {
 }
 
 export interface TerminalExecution {
-  /** Поток вывода команды (stdout+stderr). */
   read(): AsyncIterable<string>;
-  /** Код возврата; может не прийти — таймаут. */
   readonly exitCode: Promise<number | undefined>;
 }
 
@@ -44,10 +43,20 @@ export interface TerminalApprovalPort {
   }): Promise<'allow' | 'allow-session' | 'deny'>;
 }
 
+export interface TerminalHandle {
+  readonly status: TerminalRunStatus;
+  output(): { readonly text: string; readonly truncated: boolean };
+  waitForExit(): Promise<number | undefined>;
+  kill(): void;
+  release(): void;
+  readonly error?: string | undefined;
+}
+
 export interface TerminalBridgeOptions {
   readonly createSession: (input: {
     readonly cwd: string | undefined;
     readonly name: string;
+    readonly env?: Readonly<Record<string, string>> | undefined;
   }) => Promise<TerminalSession> | TerminalSession;
   readonly approval: TerminalApprovalPort;
   readonly timeoutMs?: number | undefined;
@@ -78,7 +87,6 @@ export class OutputBuffer {
     if (this.#bytes + chunkBytes > this.#maxBytes) {
       const available = Math.max(0, this.#maxBytes - this.#bytes);
       if (available > 0) {
-        // Обрезаем по байтам, не рвя UTF-8: декодируем допустимый префикс.
         const sliced = Buffer.from(chunk, 'utf8').subarray(0, available).toString('utf8');
         this.#text += sliced;
         this.#bytes += Buffer.byteLength(sliced, 'utf8');
@@ -103,33 +111,33 @@ export class OutputBuffer {
   }
 }
 
-/** Выполняет команду агента; возвращает вывод и код возврата. */
+/** Выполняет команды агента; `start()` — асинхронный handle для ACP. */
 export class TerminalBridge {
   readonly #options: TerminalBridgeOptions;
   readonly #timeoutMs: number;
-  #cancel: (() => void) | undefined;
+  #active: TerminalHandle | undefined;
 
   constructor(options: TerminalBridgeOptions) {
     this.#options = options;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  /** Отменяет текущую команду (если выполняется). */
   cancel(): void {
-    this.#cancel?.();
+    this.#active?.kill();
   }
 
-  async run(input: {
+  /** Запускает команду и возвращает handle, не дожидаясь завершения. */
+  async start(input: {
     readonly sessionId: string;
     readonly command: string;
     readonly cwd?: string | undefined;
-  }): Promise<TerminalRunResult> {
-    const started = Date.now();
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    readonly maxOutputBytes?: number | undefined;
+  }): Promise<TerminalHandle> {
     const command = input.command.trim();
     if (command === '') {
-      return this.#result('error', '', undefined, started, 'пустая команда');
+      return this.#finished('error', undefined, 'пустая команда');
     }
-
     const decision = await this.#options.approval.request({
       sessionId: input.sessionId,
       tool: 'run_command',
@@ -138,107 +146,122 @@ export class TerminalBridge {
     });
     if (decision !== 'allow' && decision !== 'allow-session') {
       this.#options.log?.('терминал: команда отклонена approval-политикой');
-      return this.#result('denied', '', undefined, started);
+      return this.#finished('denied');
     }
 
     const session = await this.#options.createSession({
       cwd: input.cwd,
-      name: `DSH: ${command.slice(0, 40)}`
+      name: `DSH: ${command.slice(0, 40)}`,
+      ...(input.env === undefined ? {} : { env: input.env })
     });
-    try {
-      if (!session.shellIntegrationAvailable) {
-        return this.#result(
-          'no-shell-integration',
-          '',
-          undefined,
-          started,
-          'shell integration недоступна — команда не выполнена'
-        );
-      }
-      const execution = session.execute(command);
-      if (execution === undefined) {
-        return this.#result('error', '', undefined, started, 'команда не запущена');
-      }
+    if (!session.shellIntegrationAvailable) {
+      session.dispose();
+      return this.#finished(
+        'no-shell-integration',
+        undefined,
+        'shell integration недоступна — команда не выполнена'
+      );
+    }
+    const execution = session.execute(command);
+    if (execution === undefined) {
+      session.dispose();
+      return this.#finished('error', undefined, 'команда не запущена');
+    }
 
-      const buffer = new OutputBuffer(this.#options.maxOutputBytes);
-      let timedOut = false;
-      let timer: NodeJS.Timeout | undefined;
-      const timeout = new Promise<'timeout'>((resolve) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          resolve('timeout');
-        }, this.#timeoutMs);
-      });
-      const cancel = new Promise<'cancelled'>((resolve) => {
-        this.#cancel = () => {
-          resolve('cancelled');
-        };
-      });
+    const buffer = new OutputBuffer(input.maxOutputBytes ?? this.#options.maxOutputBytes);
+    let status: TerminalRunStatus = 'started';
+    let error: string | undefined;
+    let settled = false;
+    let resolveExit: (value: number | undefined) => void = () => undefined;
+    const exit = new Promise<number | undefined>((resolve) => {
+      resolveExit = resolve;
+    });
+    const timerRef: { value?: NodeJS.Timeout } = {};
 
-      const reading = (async (): Promise<number | undefined> => {
+    const finish = (next: TerminalRunStatus, code: number | undefined, err?: string): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      status = next;
+      if (err !== undefined) {
+        error = err;
+      }
+      if (timerRef.value !== undefined) {
+        clearTimeout(timerRef.value);
+      }
+      session.dispose();
+      resolveExit(code);
+    };
+
+    const handle: TerminalHandle = {
+      get status() {
+        return status;
+      },
+      get error() {
+        return error;
+      },
+      output: () => ({ text: buffer.text, truncated: buffer.truncated }),
+      waitForExit: () => exit,
+      kill: () => finish('cancelled', undefined, 'команда отменена'),
+      release: () => finish('cancelled', undefined, 'команда освобождена')
+    };
+    this.#active = handle;
+    timerRef.value = setTimeout(() => {
+      finish('timeout', undefined, `таймаут ${String(this.#timeoutMs)} мс`);
+    }, this.#timeoutMs);
+
+    void (async () => {
+      try {
         for await (const chunk of execution.read()) {
+          if (settled) {
+            break;
+          }
           buffer.append(chunk);
         }
-        return execution.exitCode;
-      })();
-
-      const outcome = await Promise.race([reading, timeout, cancel]);
-      if (timer !== undefined) {
-        clearTimeout(timer);
+        const code = await execution.exitCode;
+        finish('started', code);
+      } catch (cause) {
+        finish('error', undefined, cause instanceof Error ? cause.message : String(cause));
       }
-      this.#cancel = undefined;
+    })();
 
-      if (outcome === 'timeout' || outcome === 'cancelled') {
-        // Даём чтению шанс завершиться после таймаута/отмены, но не висим.
-        await Promise.race([
-          reading.catch(() => undefined),
-          new Promise((resolve) => setTimeout(resolve, 50))
-        ]);
-        return this.#result(
-          timedOut ? 'timeout' : 'error',
-          buffer.text,
-          undefined,
-          started,
-          timedOut ? `таймаут ${String(this.#timeoutMs)} мс` : 'команда отменена',
-          buffer.truncated
-        );
-      }
-      return this.#result(
-        'ok',
-        buffer.text,
-        typeof outcome === 'number' ? outcome : undefined,
-        started,
-        undefined,
-        buffer.truncated
-      );
-    } catch (error) {
-      return this.#result(
-        'error',
-        '',
-        undefined,
-        started,
-        error instanceof Error ? error.message : String(error)
-      );
-    } finally {
-      session.dispose();
-      this.#cancel = undefined;
-    }
+    return handle;
   }
 
-  #result(
+  /** Удобный блокирующий вызов (unit/CLI): start + waitForExit. */
+  async run(input: {
+    readonly sessionId: string;
+    readonly command: string;
+    readonly cwd?: string | undefined;
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    readonly maxOutputBytes?: number | undefined;
+  }): Promise<TerminalRunResult> {
+    const started = Date.now();
+    const handle = await this.start(input);
+    const exitCode = await handle.waitForExit();
+    const output = handle.output();
+    return {
+      status: handle.status === 'started' ? 'ok' : handle.status,
+      output: output.text,
+      exitCode,
+      truncated: output.truncated,
+      durationMs: Date.now() - started,
+      ...(handle.error === undefined ? {} : { error: handle.error })
+    } as TerminalRunResult;
+  }
+
+  #finished(
     status: TerminalRunStatus,
-    output: string,
-    exitCode: number | undefined,
-    started: number,
-    error?: string,
-    truncated = false
-  ): TerminalRunResult {
+    exitCode?: number | undefined,
+    error?: string | undefined
+  ): TerminalHandle {
     return {
       status,
-      output,
-      exitCode,
-      truncated,
-      durationMs: Date.now() - started,
+      output: () => ({ text: '', truncated: false }),
+      waitForExit: () => Promise.resolve(exitCode),
+      kill: () => undefined,
+      release: () => undefined,
       ...(error === undefined ? {} : { error })
     };
   }

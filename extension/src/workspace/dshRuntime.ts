@@ -63,7 +63,11 @@ export interface DshWorkspaceRuntimeOptions {
   readonly onStateChanged?: ((state: RuntimeState) => void) | undefined;
   /** Фабрика терминала (в проде — VS Code shell integration). */
   readonly createTerminalSession?:
-    | ((input: { readonly cwd: string | undefined; readonly name: string }) => TerminalSession)
+    | ((input: {
+        readonly cwd: string | undefined;
+        readonly name: string;
+        readonly env?: Readonly<Record<string, string>> | undefined;
+      }) => TerminalSession)
     | undefined;
   /** Сбор диагностики (в проде — vscode.languages); тесты подменяют. */
   readonly collectDiagnostics?: (() => DiagnosticsReport) | undefined;
@@ -145,17 +149,17 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
         ? {}
         : { onStateChanged: options.onStateChanged }),
       // Обработчик permission: политика/аудит #009 и ответ ACP.
-      terminalClient: async ({ sessionId, command, cwd }) => {
+      terminalClient: async ({ sessionId, command, cwd, env, maxOutputBytes }) => {
         if (this.#terminal === undefined) {
           throw new Error('терминал не подключён');
         }
-        const result = await this.#terminal.run({ sessionId, command, cwd });
-        return {
-          output: result.output,
-          exitCode: result.exitCode,
-          truncated: result.truncated,
-          ...(result.error === undefined ? {} : { error: result.error })
-        };
+        return this.#terminal.start({
+          sessionId,
+          command,
+          cwd,
+          ...(env === undefined ? {} : { env }),
+          ...(maxOutputBytes === undefined ? {} : { maxOutputBytes })
+        });
       },
       permissionHandler: async ({ sessionId, tool, details }) => {
         const optionsList = Array.isArray(details) ? details : [];
@@ -179,7 +183,12 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     });
     if (options.createTerminalSession !== undefined) {
       this.#terminal = new TerminalBridge({
-        createSession: (input) => options.createTerminalSession!(input),
+        createSession: (input) =>
+          options.createTerminalSession!({
+            cwd: input.cwd,
+            name: input.name,
+            ...(input.env === undefined ? {} : { env: input.env })
+          }),
         approval: {
           request: async (input) => {
             const decision = await this.#approvals.request({
@@ -299,6 +308,9 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     const sessionId = this.#sessions.state.sessionId;
     if (sessionId === null) {
       throw new Error('нет активной сессии для передачи диагностики');
+    }
+    if (this.#sessions.state.turnId !== null) {
+      throw new Error('активный ход агента: диагностику можно отправить после завершения');
     }
     const report = this.#options.collectDiagnostics();
     const payload = diagnosticsPayload(report);
