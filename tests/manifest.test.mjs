@@ -37,7 +37,9 @@ const extraCommands = {
   'dsh.sessions.stop': 'DSH: Stop Session',
   'dsh.sessions.rename': 'DSH: Rename Session',
   'dsh.sessions.delete': 'DSH: Delete Session',
-  'dsh.sessions.openTranscript': 'DSH: Open Transcript'
+  'dsh.sessions.openTranscript': 'DSH: Open Transcript',
+  // #010: откат последней правки DiffService.
+  'dsh.revertLastEdit': 'DSH: Revert Last Edit'
 };
 
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */

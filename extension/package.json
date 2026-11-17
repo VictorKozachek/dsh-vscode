@@ -130,6 +130,11 @@
         "command": "dsh.sessions.openTranscript",
         "title": "Open Transcript",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.revertLastEdit",
+        "title": "Revert Last Edit",
+        "category": "DSH"
       }
     ],
     "configuration": {

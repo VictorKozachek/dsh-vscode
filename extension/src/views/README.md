@@ -140,6 +140,26 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
 `dsh.executablePath`; панель не падает при остановленном рантайме (источник
 ленивый: менеджер появляется после активации воркспейса).
 
-Тесты: `tests/sessions-model.test.mjs` (5), `tests/sessions-controller.test.mjs`
-(8), рендер дерева/команды — в `tests/activation.test.mjs` и
-`tests/chat-view.test.mjs` (манифест).
+Тесты: `tests/sessions-model.test.mjs`, `tests/sessions-nodes.test.mjs`,
+`tests/sessions-source.test.mjs`, `tests/sessions-controller.test.mjs`,
+`tests/sessions-integration.test.mjs`, манифест — в `tests/chat-view.test.mjs`.
+
+## Чат, привязанный к сессии (#024)
+
+`ChatController` принимает порт `ChatSessionsPort` (`SessionManager` #007):
+снимок активной сессии, черновики и события `sessionChanged`/`statusChanged`.
+
+- события `token`/`tool.call`/`tool.result`/`turn.done`/`error` фильтруются по
+  `sessionId`: события неактивной сессии в ленту не попадают;
+- при переключении — `replaceMessages` из транскрипта (`chatTranscript.ts`,
+  история на сессию), `chatSession` (id, title, model, preset, status,
+  `historyState`) и `composerDraft`; лента и `turnId` сбрасываются;
+- `Стоп` вызывает `turn.cancel` только для активной сессии и её хода;
+- `setDraft` сохраняет черновик через порт; `openNewSession`/`retry` — CTA и
+  повтор состояния;
+- без порта сессий поведение прежнее (каркас/старые тесты).
+
+Проводка контроллера к реальному `SessionManager` (создание в активации) —
+#011: в этой ветке провайдер принимает порт `chatSession` для
+`draftChanged`/`openNewSession`/`retryChat`, но сам контроллер создаётся там,
+где появляется мост.

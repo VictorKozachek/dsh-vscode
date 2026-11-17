@@ -203,6 +203,7 @@ test('активация: все команды каркаса зарегист�
     'dsh.pruneWorkspaces',
     'dsh.reloadContext',
     'dsh.resumeLastSession',
+    'dsh.revertLastEdit',
     'dsh.sessions.create',
     'dsh.sessions.delete',
     'dsh.sessions.openTranscript',

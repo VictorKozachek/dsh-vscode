@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { register } from 'node:module';
 import test from 'node:test';
 
-import { dispatchWebviewMessage } from '../extension/src/views/chatDispatch.ts';
-import { ChatController } from '../extension/src/views/chatEvents.ts';
-import { ChatSession } from '../extension/src/views/chatHtml.ts';
+register('./helpers/ts-loader.mjs', import.meta.url);
+const { dispatchWebviewMessage } = await import('../extension/src/views/chatDispatch.ts');
+const { ChatController } = await import('../extension/src/views/chatEvents.ts');
+const { ChatSession } = await import('../extension/src/views/chatHtml.ts');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
