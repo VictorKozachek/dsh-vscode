@@ -240,6 +240,11 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     );
   }
 
+  /** Пересборка контекста без рестарта расширения (#013). */
+  async reloadContext(): Promise<void> {
+    this.#contextPack = await this.#loader.reload();
+  }
+
   async restoreSession(): Promise<void> {
     await this.#sessions.restore();
   }

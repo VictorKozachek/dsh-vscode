@@ -72,7 +72,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'approvalShowDiff',
   'draftChanged',
   'openNewSession',
-  'retryChat'
+  'retryChat',
+  'settingsApply'
 ] as const;
 
 /** Сообщения extension host → WebView. */
@@ -94,7 +95,8 @@ export const EXTENSION_MESSAGE_TYPES = [
   'approvalResolved',
   'chatSession',
   'composerDraft',
-  'replaceFeed'
+  'replaceFeed',
+  'settingsOpen'
 ] as const;
 
 /** Статус потока ответа. */
@@ -148,7 +150,8 @@ export type WebviewToExtension =
   | { readonly type: 'approvalShowDiff'; readonly id: string }
   | { readonly type: 'draftChanged'; readonly text: string }
   | { readonly type: 'openNewSession' }
-  | { readonly type: 'retryChat' };
+  | { readonly type: 'retryChat' }
+  | { readonly type: 'settingsApply'; readonly values: Readonly<Record<string, unknown>> };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =
@@ -169,4 +172,5 @@ export type ExtensionToWebview =
   | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionKind }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
-  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] }
+  | { readonly type: 'settingsOpen'; readonly values: Readonly<Record<string, unknown>> };

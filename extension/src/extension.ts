@@ -22,6 +22,12 @@ import {
 } from './workspace/lifecycleController';
 import type { LifecycleState } from './workspace/lifecycle';
 import { VscodeDiffEditor } from './diff/diffEditor';
+import {
+  registerContextInspector,
+  type ContextInspectorProvider
+} from './views/contextInspectorView';
+import { buildContextInspector } from './views/contextInspector';
+import type { ContextPack } from './context/contextLoader';
 import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
 import type { ExtensionMessage } from './views/chatHtml';
 import {
@@ -68,6 +74,9 @@ let workspaceLifecycle: WorkspaceLifecycleHandle | undefined;
 let lastContextPack: unknown;
 let remoteWarningShown = false;
 let activeWorkspace: ResolvedWorkspace | null = null;
+let activeRuntime: DshWorkspaceRuntime | undefined;
+let contextInspector: ContextInspectorProvider | undefined;
+let chatViewProvider: ChatViewProvider | undefined;
 
 /**
  * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
@@ -282,14 +291,30 @@ export function activate(context: vscode.ExtensionContext): void {
       cancel: () => {
         newSessionController?.cancel();
       }
+    },
+    settings: {
+      apply: async (values) => {
+        const result = await applySettings(values);
+        await vscode.window.showInformationMessage(
+          result.errors.length === 0
+            ? `DSH: настройки применены (${String(result.applied)}).`
+            : `DSH: настройки не применены — неверные значения: ${result.errors.join(', ')}.`
+        );
+      }
     }
   });
+  chatViewProvider = chatView;
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatView, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
+
+  // Инспектор контекста (#013): реальные правила/скилы/конфликты.
+  contextInspector = registerContextInspector(context, {
+    log: (line) => log.appendLine(line)
+  });
 
   // Lifecycle воркспейса (#011): смена папки переключает контекст и сессии с
   // grace period; компоненты активного рантайма подключаются к панели/командам.
@@ -304,12 +329,16 @@ export function activate(context: vscode.ExtensionContext): void {
       // Ссылка на активный рантайм очищается, но сам AcpRuntime живёт в grace:
       // dispose делает lifecycle.
       dshRuntime = undefined;
+      activeRuntime = undefined;
+      contextInspector?.setPack(null);
       return;
     }
     const runtime = handle.runtime;
     // Статус/версии #021 — от активного lifecycle-рантайма; старый не
     // закрываем — его держит grace period lifecycle.
     dshRuntime = runtime.acpRuntime;
+    activeRuntime = runtime;
+    contextInspector?.setPack((runtime.contextPack ?? null) as ContextPack | null);
     updateStatusBarRuntime(runtime.acpRuntime.state);
     maybeWarnRemoteRuntime();
     chatView.setChat(runtime.chat);
@@ -401,6 +430,55 @@ export function primaryWorkspaceName(): string | undefined {
   }
   const configured = vscode.workspace.getConfiguration('dsh').get<string>('primaryWorkspace');
   return folders.find((folder) => folder.name === configured)?.name ?? folders[0]?.name;
+}
+
+const SETTINGS_KEYS = {
+  executablePath: 'string',
+  profile: 'string',
+  defaultModel: 'string',
+  models: 'array',
+  sandboxMode: ['read-only', 'workspace-write', 'danger-full-access'],
+  approvalPolicy: ['ask', 'auto', 'never'],
+  'workspace.graceMinutes': 'number',
+  'context.maxBytes': 'number',
+  primaryWorkspace: 'string'
+} as const;
+
+/** Текущие значения dsh.* для экрана настроек (#013). */
+function currentSettings(): Record<string, unknown> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  return Object.fromEntries(
+    Object.keys(SETTINGS_KEYS).map((key) => [key, configuration.get<unknown>(key)])
+  );
+}
+
+/** Валидация и применение настроек из WebView (без рестарта). */
+async function applySettings(
+  values: Readonly<Record<string, unknown>>
+): Promise<{ applied: number; errors: readonly string[] }> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const errors: string[] = [];
+  let applied = 0;
+  for (const [key, expected] of Object.entries(SETTINGS_KEYS)) {
+    if (!(key in values)) {
+      continue;
+    }
+    const value = values[key];
+    const valid = Array.isArray(expected)
+      ? typeof value === 'string' && expected.includes(value)
+      : expected === 'array'
+        ? Array.isArray(value) && value.every((item) => typeof item === 'string')
+        : expected === 'number'
+          ? typeof value === 'number' && Number.isFinite(value) && value >= 0
+          : typeof value === 'string';
+    if (!valid) {
+      errors.push(key);
+      continue;
+    }
+    await configuration.update(key, value, vscode.ConfigurationTarget.Workspace);
+    applied += 1;
+  }
+  return { applied, errors };
 }
 
 function workspaceName(): string {
@@ -529,7 +607,28 @@ function maybeWarnRemoteRuntime(): void {
 }
 
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.reloadContext) {
+    if (activeRuntime === undefined) {
+      await vscode.window.showInformationMessage(
+        'DSH: Reload Context — нет активного воркспейса.'
+      );
+      return;
+    }
+    await activeRuntime.reloadContext();
+    lastContextPack = activeRuntime.contextPack;
+    contextInspector?.setPack((activeRuntime.contextPack ?? null) as ContextPack | null);
+    const inspector = buildContextInspector(activeRuntime.contextPack as ContextPack);
+    await vscode.window.showInformationMessage(
+      `DSH: контекст перезагружен — ${String(inspector.stats.rules)} правил, ${String(inspector.stats.skills)} скилов, ${String(inspector.stats.files)} файлов.`
+    );
+    return;
+  }
   if (command === COMMAND_IDS.showContextInspector) {
+    try {
+      await vscode.commands.executeCommand('dsh.context.focus');
+    } catch {
+      // view может быть скрыт/недоступен — сообщение ниже всё равно покажем
+    }
     const pack = lastContextPack as
       | {
           files?: readonly unknown[];
@@ -568,6 +667,7 @@ async function runCommand(command: CommandId): Promise<void> {
   }
   if (command === COMMAND_IDS.openSettings) {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'dsh');
+    void chatViewProvider?.postMessage({ type: 'settingsOpen', values: currentSettings() });
     return;
   }
   await vscode.window.showInformationMessage(
