@@ -290,3 +290,16 @@ test('активация: DSH: Prune Workspaces чистит реестр по �
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('Sessions «+» открывает диалог New Session (#023), а не inputBox', async () => {
+  const { fake, state } = createFakeVscode();
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  await state.commands.get('dsh.sessions.create')();
+  assert.ok(
+    state.executed.some((item) => item.id === 'dsh.newSession'),
+    'вызван dsh.newSession'
+  );
+  extension.deactivate();
+});

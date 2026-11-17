@@ -144,21 +144,9 @@ export function registerSessionsView(
 
   const commands: vscode.Disposable[] = [
     vscode.commands.registerCommand(SESSIONS_COMMANDS.create, async () => {
-      // Заглушка #023: спрашиваем только заголовок; полный диалог —
-      // в New Session (когда #023 сольётся).
-      const title = await vscode.window.showInputBox({
-        prompt: 'Название сессии (необязательно)',
-        ignoreFocusOut: true
-      });
-      if (title === undefined) {
-        return;
-      }
-      const snapshot = await controller.create(title.trim() === '' ? undefined : title.trim());
-      if (snapshot !== null) {
-        await notify(
-          `DSH: создана сессия ${snapshot.sessionId ?? '?'}; полный диалог создания появится в #023.`
-        );
-      }
+      // После слияния #023 «+» открывает полноценный диалог New Session
+      // (пресет/модель/sandbox/approval), а не заглушку с inputBox.
+      await vscode.commands.executeCommand('dsh.newSession');
     }),
     vscode.commands.registerCommand(SESSIONS_COMMANDS.refresh, async () => {
       await controller.refresh();
