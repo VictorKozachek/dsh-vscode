@@ -164,26 +164,32 @@ export function registerWorkspaceLifecycle(
   // Стартовая активация: если папка уже открыта, контекст и сессия поднимутся.
   void refresh();
 
-  return {
-    dispose(): void {
-      disposed = true;
-      listener.dispose();
-      // Синхронный Disposable VS Code: запускаем остановку, но deactivate()
-      // расширения ждёт её через disposeAsync().
-      void lifecycle?.dispose();
-    },
-    async disposeAsync(): Promise<void> {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      listener.dispose();
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    if (stopping !== undefined) {
+      return stopping;
+    }
+    disposed = true;
+    listener.dispose();
+    stopping = (async () => {
       await lifecycle?.dispose();
       for (const runtime of runtimes.values()) {
         await runtime.dispose();
       }
       runtimes.clear();
       options.onRuntimeChange?.(null);
+    })();
+    return stopping;
+  };
+
+  return {
+    dispose(): void {
+      // Синхронный Disposable VS Code: запускаем остановку; disposeAsync()
+      // (deactivate) дождётся того же промиса.
+      void stop();
+    },
+    disposeAsync(): Promise<void> {
+      return stop();
     }
   };
 }

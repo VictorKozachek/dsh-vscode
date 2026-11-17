@@ -6,6 +6,31 @@
  * `tests/chat-view.test.mjs`.
  */
 
+/** Пресет рантайма для формы New Session. */
+export interface NewSessionPresetDto {
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string | undefined;
+}
+
+/** Значения формы New Session (wire). */
+export interface NewSessionValuesDto {
+  readonly preset: string;
+  readonly model: string;
+  readonly sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  readonly approval: 'ask' | 'auto' | 'never';
+  readonly title: string;
+  readonly confirmDanger: boolean;
+}
+
+/** Форма New Session. */
+export interface NewSessionFormDto {
+  readonly presets: readonly NewSessionPresetDto[];
+  readonly models: readonly string[];
+  readonly values: NewSessionValuesDto;
+  readonly errors: Readonly<Record<string, string>>;
+}
+
 /** Решение по approval-запросу. */
 export type ApprovalDecisionKind = 'allow' | 'allow-session' | 'deny';
 
@@ -41,6 +66,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'ready',
   'sendMessage',
   'stop',
+  'newSessionSubmit',
+  'newSessionCancel',
   'approvalResolve',
   'approvalShowDiff',
   'draftChanged',
@@ -60,6 +87,9 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolResult',
   'chatDone',
   'chatCancelled',
+  'newSessionOpen',
+  'newSessionUpdate',
+  'newSessionClose',
   'approvalRequest',
   'approvalResolved',
   'chatSession',
@@ -112,6 +142,8 @@ export type WebviewToExtension =
   | { readonly type: 'ready' }
   | { readonly type: 'sendMessage'; readonly text: string }
   | { readonly type: 'stop' }
+  | { readonly type: 'newSessionSubmit'; readonly values: NewSessionValuesDto }
+  | { readonly type: 'newSessionCancel' }
   | { readonly type: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionKind }
   | { readonly type: 'approvalShowDiff'; readonly id: string }
   | { readonly type: 'draftChanged'; readonly text: string }
@@ -130,6 +162,9 @@ export type ExtensionToWebview =
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResult }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
+  | { readonly type: 'newSessionOpen'; readonly form: NewSessionFormDto }
+  | { readonly type: 'newSessionUpdate'; readonly form: NewSessionFormDto }
+  | { readonly type: 'newSessionClose' }
   | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
   | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionKind }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }

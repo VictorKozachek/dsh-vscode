@@ -18,7 +18,8 @@ import type { ChatController } from './chatEvents';
 import { dispatchWebviewMessage } from './chatDispatch';
 import type {
   ApprovalDispatchPort,
-  ChatSessionDispatchPort
+  ChatSessionDispatchPort,
+  NewSessionDispatchPort
 } from './chatDispatch';
 import {
   ChatSession,
@@ -46,6 +47,8 @@ export interface ChatViewProviderOptions {
    * без него панель работает в эхо-режиме каркаса.
    */
   readonly chat?: ChatController | undefined;
+  /** Форма New Session (#023). */
+  readonly newSession?: NewSessionDispatchPort | undefined;
   /** Брокер подтверждений (#009): карточки approval.* в панели. */
   readonly approvals?: ApprovalDispatchPort | undefined;
   /** Привязка чата к сессии (#024). */
@@ -196,6 +199,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       state: () => this.#options.state(),
       post: (outgoing) => this.postMessage(outgoing),
       log: (line) => this.#options.log?.(line),
+      newSession: this.#options.newSession,
       approvals: this.#approvals,
       chatSession: this.#chatSession
     });
