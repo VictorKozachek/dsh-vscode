@@ -494,3 +494,29 @@ test('stop: отказ turn.cancel не притворяется останов�
   assert.equal(manager.state.turnId, 'turn_1');
   manager.dispose();
 });
+
+test('create передаёт в session.create полный набор опций формы', async () => {
+  const bridge = createBridge({
+    'session.create': () => ({ sessionId: 'sess_1', createdAt: '2026-11-09T12:00:00.000Z' })
+  });
+  const manager = createManager({ bridge, persistence: createPersistence(null) });
+
+  await manager.create({
+    title: 'Мой чат',
+    model: 'deepseek-v4',
+    preset: 'worker',
+    sandbox: 'danger-full-access',
+    approval: 'never'
+  });
+
+  const call = bridge.calls.find((item) => item.method === 'session.create');
+  assert.deepEqual(call.params, {
+    workspaceId: 'ws_1',
+    title: 'Мой чат',
+    model: 'deepseek-v4',
+    preset: 'worker',
+    sandbox: 'danger-full-access',
+    approval: 'never'
+  });
+  manager.dispose();
+});
