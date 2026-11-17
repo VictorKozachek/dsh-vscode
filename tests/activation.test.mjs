@@ -84,6 +84,12 @@ function createFakeVscode({ settings = {} } = {}) {
     TreeItem: FakeTreeItem,
     TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
     ThemeIcon: FakeThemeIcon,
+    RelativePattern: class RelativePattern {
+      constructor(base, pattern) {
+        this.base = base;
+        this.pattern = pattern;
+      }
+    },
     env: { language: 'ru' },
     window: {
       createStatusBarItem(id, alignment, priority) {
@@ -132,6 +138,11 @@ function createFakeVscode({ settings = {} } = {}) {
       },
       async showQuickPick(items) {
         return typeof state.quickPick === 'string' ? state.quickPick : items[0];
+      },
+      async showTextDocument(document) {
+        state.shownDocuments ??= [];
+        state.shownDocuments.push(document.uri.fsPath);
+        return { document };
       },
       registerWebviewViewProvider(viewType, provider) {
         state.viewProviders.set(viewType, provider);
@@ -194,6 +205,14 @@ function createFakeVscode({ settings = {} } = {}) {
       },
       registerTextDocumentContentProvider() {
         return { dispose() {} };
+      },
+      async findFiles() {
+        return (state.kanbanFiles ?? []).map((fsPath) => ({ fsPath }));
+      },
+      async openTextDocument(filePath) {
+        state.openedDocuments ??= [];
+        state.openedDocuments.push(filePath);
+        return { uri: { fsPath: filePath } };
       }
     }
   };
@@ -354,6 +373,8 @@ test('активация: все команды каркаса зарегист�
   const commandIds = [...state.commands.keys()].sort();
   assert.deepEqual(commandIds, [
     'dsh.choosePrimaryWorkspace',
+    'dsh.kanban.openCard',
+    'dsh.kanban.refresh',
     'dsh.newSession',
     'dsh.openSettings',
     'dsh.openTaskBoard',
@@ -784,4 +805,44 @@ test('настройки: settingsOpen с текущими значениями 
   await tick();
   assert.equal(state.settings['dsh.sandboxMode'], 'read-only');
   assert.equal(state.settings['dsh.workspace.graceMinutes'], 5);
+});
+
+
+test('Kanban: панель читает карточки, колонки и клик открывает файл', async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dsh-kanban-ui-'));
+  const tasks = path.join(workspace, '.kanban', 'tasks');
+  await mkdir(tasks, { recursive: true });
+  const card = path.join(tasks, '014.md');
+  await writeFile(
+    card,
+    '---\nid: "014"\ntitle: "Kanban"\nstatus: todo\nowner: me\nbranch: task/014\nupdated: 2026-11-17T00:00:00Z\n---\nтело\n'
+  );
+  const { fake, state } = createFakeVscode();
+  state.workspaceFolders = [{ name: 'ws', index: 0, uri: { fsPath: workspace } }];
+  state.kanbanFiles = [card];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({
+    subscriptions: [],
+    globalState: { get: () => undefined, update: async () => undefined }
+  });
+
+  const provider = state.treeProviders?.get('dsh.kanban');
+  assert.ok(provider, 'view dsh.kanban зарегистрирован');
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline && provider.columns.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const columns = provider.getChildren();
+  assert.equal(columns.length, 1);
+  assert.match(columns[0].column.label, /Todo/);
+  const cards = provider.getChildren(columns[0]);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].card.id, '014');
+
+  await state.commands.get('dsh.kanban.openCard')(card);
+  assert.deepEqual(state.shownDocuments, [card], 'клик открыл файл карточки');
+  await rm(workspace, { recursive: true, force: true });
 });

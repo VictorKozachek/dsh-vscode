@@ -41,7 +41,10 @@ const extraCommands = {
   // #012: выбор primary в multi-root.
   'dsh.choosePrimaryWorkspace': 'DSH: Choose Primary Workspace',
   // #010: откат последней правки DiffService.
-  'dsh.revertLastEdit': 'DSH: Revert Last Edit'
+  'dsh.revertLastEdit': 'DSH: Revert Last Edit',
+  // #014: read-only Kanban-панель.
+  'dsh.kanban.refresh': 'DSH: Refresh Kanban',
+  'dsh.kanban.openCard': 'DSH: Open Kanban Card'
 };
 
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */

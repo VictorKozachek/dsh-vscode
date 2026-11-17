@@ -46,6 +46,12 @@
           "name": "Context",
           "type": "tree",
           "contextualTitle": "DSH"
+        },
+        {
+          "id": "dsh.kanban",
+          "name": "Kanban",
+          "type": "tree",
+          "contextualTitle": "DSH"
         }
       ]
     },
@@ -145,6 +151,16 @@
       {
         "command": "dsh.choosePrimaryWorkspace",
         "title": "Choose Primary Workspace",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.kanban.refresh",
+        "title": "Refresh Kanban",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.kanban.openCard",
+        "title": "Open Kanban Card",
         "category": "DSH"
       }
     ],
