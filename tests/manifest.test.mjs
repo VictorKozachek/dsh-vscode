@@ -38,6 +38,8 @@ const extraCommands = {
   'dsh.sessions.rename': 'DSH: Rename Session',
   'dsh.sessions.delete': 'DSH: Delete Session',
   'dsh.sessions.openTranscript': 'DSH: Open Transcript',
+  // #012: выбор primary в multi-root.
+  'dsh.choosePrimaryWorkspace': 'DSH: Choose Primary Workspace',
   // #010: откат последней правки DiffService.
   'dsh.revertLastEdit': 'DSH: Revert Last Edit'
 };
@@ -66,6 +68,7 @@ const expectedSettings = {
   'dsh.workspace.keepDays': { type: 'number', default: 90 },
   // Не из §9: grace period смены папки (#011), 10 минут.
   'dsh.workspace.graceMinutes': { type: 'number', default: 10 },
+  'dsh.primaryWorkspace': { type: 'string', default: '' },
   'dsh.models': { type: 'array', default: [] },
   'dsh.kanban.enabled': { type: 'boolean', default: false },
   'dsh.telemetry.enabled': { type: 'boolean', default: false }

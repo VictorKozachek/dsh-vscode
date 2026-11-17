@@ -50,6 +50,7 @@ function createFakeVscode({ settings = {} } = {}) {
 
   const fake = {
     StatusBarAlignment: { Left: 1, Right: 2 },
+    ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
     Uri: {
       joinPath(uri, ...parts) {
         const joined = [uri.path, ...parts].join('/');
@@ -107,6 +108,13 @@ function createFakeVscode({ settings = {} } = {}) {
         state.errors.push(message);
         return undefined;
       },
+      async showWarningMessage(message) {
+        state.messages.push(message);
+        return undefined;
+      },
+      async showQuickPick(items) {
+        return typeof state.quickPick === 'string' ? state.quickPick : items[0];
+      },
       registerWebviewViewProvider(viewType, provider) {
         state.viewProviders.set(viewType, provider);
         return { dispose() {} };
@@ -126,9 +134,6 @@ function createFakeVscode({ settings = {} } = {}) {
       async showInputBox() {
         return undefined;
       },
-      async showWarningMessage(_message, _options, ...items) {
-        return items[0];
-      }
     },
     commands: {
       registerCommand(id, handler) {
@@ -154,6 +159,9 @@ function createFakeVscode({ settings = {} } = {}) {
         return {
           get(key) {
             return state.settings[`${section}.${key}`];
+          },
+          async update(key, value) {
+            state.settings[`${section}.${key}`] = value;
           }
         };
       },
@@ -322,6 +330,7 @@ test('активация: все команды каркаса зарегист�
 
   const commandIds = [...state.commands.keys()].sort();
   assert.deepEqual(commandIds, [
+    'dsh.choosePrimaryWorkspace',
     'dsh.newSession',
     'dsh.openSettings',
     'dsh.openTaskBoard',
@@ -569,6 +578,72 @@ test('extension-lifecycle: A→B→A в grace не перезапускает п
   assert.equal(runtimeA.processId, undefined);
   await rm(first, { recursive: true, force: true });
   await rm(second, { recursive: true, force: true });
+});
+
+test('multi-root: primary из настройки виден в статус-баре и выбирается командой', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.primaryWorkspace': 'second' }
+  });
+  state.workspaceFolders = [
+    { name: 'first', index: 0 },
+    { name: 'second', index: 1 }
+  ];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+  assert.equal(state.statusBar.text, 'DSH · second · idle');
+
+  state.quickPick = 'first';
+  await state.commands.get('dsh.choosePrimaryWorkspace')();
+  assert.equal(state.settings['dsh.primaryWorkspace'], 'first');
+  assert.equal(state.statusBar.text, 'DSH · first · idle');
+});
+
+test('multi-root: primary из настройки доходит до resolveWorkspace (production path)', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const first = await mkdtemp(path.join(os.tmpdir(), 'dsh-primary-first-'));
+  const second = await mkdtemp(path.join(os.tmpdir(), 'dsh-primary-second-'));
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.primaryWorkspace': path.basename(second) }
+  });
+  state.workspaceFolders = [
+    { name: path.basename(first), index: 0, uri: { fsPath: first } },
+    { name: path.basename(second), index: 1, uri: { fsPath: second } }
+  ];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.equal(state.statusBar.text, `DSH · ${path.basename(second)} · idle`);
+  assert.ok(
+    state.output.some(
+      (line) => line.includes('primary') && line.includes(path.basename(second))
+    ),
+    'resolver выбрал primary из настройки'
+  );
+});
+
+test('remote: отсутствие dsh показывает инструкцию, расширение не падает', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.executablePath': '/nonexistent/dsh-binary-xyz' }
+  });
+  fake.env.remoteName = 'ssh-remote';
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const deadline = Date.now() + 3000;
+  while (
+    Date.now() < deadline &&
+    !state.messages.some((message) => /Установите: npm i -g @deepseek-ai\/dsh/.test(message))
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(
+    state.messages.some((message) => /Установите: npm i -g @deepseek-ai\/dsh/.test(message)),
+    'инструкция появилась'
+  );
+  assert.equal(state.errors.length, 0, 'расширение не падает');
 });
 
 test('активация: форма восстанавливает последнюю выбранную модель из globalState', async () => {

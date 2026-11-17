@@ -24,6 +24,13 @@ import type { LifecycleState } from './workspace/lifecycle';
 import { VscodeDiffEditor } from './diff/diffEditor';
 import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
 import type { ExtensionMessage } from './views/chatHtml';
+import {
+  checkRemoteRuntime,
+  remoteKind,
+  translateWorkspacePath
+} from './workspace/remote';
+import { resolveWorkspace, type ResolvedWorkspace } from './workspace/resolver';
+import { discoverRuntime } from './runtime/discovery';
 import type { AcpRuntime, RuntimeState } from './runtime/acpRuntime';
 
 /**
@@ -38,7 +45,8 @@ export const COMMAND_IDS = {
   stopAgent: 'dsh.stopAgent',
   showContextInspector: 'dsh.showContextInspector',
   resumeLastSession: 'dsh.resumeLastSession',
-  openSettings: 'dsh.openSettings'
+  openSettings: 'dsh.openSettings',
+  choosePrimaryWorkspace: 'dsh.choosePrimaryWorkspace'
 } as const;
 
 export type CommandId = (typeof COMMAND_IDS)[keyof typeof COMMAND_IDS];
@@ -51,12 +59,15 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
   [COMMAND_IDS.stopAgent]: 'DSH: Stop Agent',
   [COMMAND_IDS.showContextInspector]: 'DSH: Show Context Inspector',
   [COMMAND_IDS.resumeLastSession]: 'DSH: Resume Last Session',
-  [COMMAND_IDS.openSettings]: 'DSH: Open Settings'
+  [COMMAND_IDS.openSettings]: 'DSH: Open Settings',
+  [COMMAND_IDS.choosePrimaryWorkspace]: 'DSH: Choose Primary Workspace'
 };
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let workspaceLifecycle: WorkspaceLifecycleHandle | undefined;
 let lastContextPack: unknown;
+let remoteWarningShown = false;
+let activeWorkspace: ResolvedWorkspace | null = null;
 
 /**
  * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
@@ -300,6 +311,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // закрываем — его держит grace period lifecycle.
     dshRuntime = runtime.acpRuntime;
     updateStatusBarRuntime(runtime.acpRuntime.state);
+    maybeWarnRemoteRuntime();
     chatView.setChat(runtime.chat);
     chatView.setApprovals({
       resolve: (id, decision) => runtime.approvals.resolve(id, decision),
@@ -322,7 +334,10 @@ export function activate(context: vscode.ExtensionContext): void {
       log.appendLine(line);
     },
     onStatus: (state) => updateStatusBar(state),
-    onRuntimeState: (state) => updateStatusBarRuntime(state),
+    onRuntimeState: (state) => {
+      updateStatusBarRuntime(state);
+      maybeWarnRemoteRuntime();
+    },
     postMessage: (message) => chatView.postMessage(message as ExtensionMessage),
     createDiffEditor: () => new VscodeDiffEditor(context),
     onRuntimeChange: (handle) => applyRuntimeHandle(handle)
@@ -339,9 +354,13 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  void refreshWorkspaceIdentity();
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      // До перерезолва показываем имя из новых папок, не старое.
+      activeWorkspace = null;
       updateStatusBar();
+      void refreshWorkspaceIdentity();
       log.appendLine(`воркспейс сменился: ${workspaceName()}`);
     })
   );
@@ -374,12 +393,79 @@ function detectLocale(): 'ru' | 'en' {
 }
 
 /** Имя открытой папки (или имя workspace) для статус-бара. */
-function workspaceName(): string {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder !== undefined) {
-    return folder.name;
+/** Primary multi-root: настройка `dsh.primaryWorkspace`, иначе первая папка. */
+export function primaryWorkspaceName(): string | undefined {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
+    return undefined;
   }
-  return vscode.workspace.name ?? 'no workspace';
+  const configured = vscode.workspace.getConfiguration('dsh').get<string>('primaryWorkspace');
+  return folders.find((folder) => folder.name === configured)?.name ?? folders[0]?.name;
+}
+
+function workspaceName(): string {
+  return (
+    activeWorkspace?.primary.name ??
+    primaryWorkspaceName() ??
+    vscode.workspace.name ??
+    'no workspace'
+  );
+}
+
+/**
+ * Перерезолвить воркспейс: primary из настройки, WSL-пути и remote-kind
+ * (#012). Используется активацией, сменой папок и командой выбора primary.
+ */
+async function refreshWorkspaceIdentity(): Promise<void> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const remoteName = vscode.env?.remoteName;
+  const folders = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+    uri: {
+      fsPath: translateWorkspacePath(folder.uri?.fsPath ?? '', {
+        remoteName,
+        platform: process.platform
+      })
+    },
+    name: folder.name,
+    index: folder.index
+  })).filter((folder) => folder.uri.fsPath !== '');
+  activeWorkspace = await resolveWorkspace(folders, {
+    remoteName,
+    ...(vscode.workspace.workspaceFile === undefined
+      ? {}
+      : { workspaceFile: vscode.workspace.workspaceFile.fsPath }),
+    primaryFolder: translateWorkspacePath(
+      configuration.get<string>('primaryWorkspace') ?? '',
+      { remoteName, platform: process.platform }
+    )
+  });
+  if (activeWorkspace !== null) {
+    outputChannel?.appendLine(
+      `воркспейс ${activeWorkspace.id}: primary ${activeWorkspace.primary.name}` +
+        ` (${String(activeWorkspace.folders.length)} папок, remote ${activeWorkspace.remote})`
+    );
+  }
+  updateStatusBar();
+  await checkRemoteAvailability(remoteName);
+}
+
+/** Проверка наличия dsh на хосте: missing → инструкция, не падение. */
+async function checkRemoteAvailability(remoteName: string | undefined): Promise<void> {
+  const kind = remoteKind(remoteName);
+  if (kind === 'local' || remoteWarningShown) {
+    return;
+  }
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const discovery = await discoverRuntime({
+    homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
+    ...(configuration.get<string>('executablePath') === undefined
+      ? {}
+      : { executablePath: configuration.get<string>('executablePath') })
+  });
+  if (discovery.status === 'missing') {
+    remoteWarningShown = true;
+    await vscode.window.showWarningMessage(discovery.instructions);
+  }
 }
 
 /** Подпись состояния lifecycle для статус-бара. */
@@ -424,6 +510,24 @@ function updateStatusBarRuntime(state: RuntimeState): void {
   statusBarItem.show();
 }
 
+/** Remote-версия #012: missing/old → инструкция вместо падения. */
+function maybeWarnRemoteRuntime(): void {
+  if (remoteWarningShown || dshRuntime === undefined) {
+    return;
+  }
+  if (remoteKind(vscode.env?.remoteName) === 'local') {
+    return;
+  }
+  const status = checkRemoteRuntime({
+    remoteName: vscode.env?.remoteName,
+    version: dshRuntime.version.dsh
+  });
+  if (status.kind !== 'ok') {
+    remoteWarningShown = true;
+    void vscode.window.showWarningMessage?.(status.instructions);
+  }
+}
+
 async function runCommand(command: CommandId): Promise<void> {
   if (command === COMMAND_IDS.showContextInspector) {
     const pack = lastContextPack as
@@ -439,6 +543,27 @@ async function runCommand(command: CommandId): Promise<void> {
         ? 'DSH: контекст ещё не загружен (нет активного воркспейса).'
         : `DSH контекст: файлов ${pack.files?.length ?? 0}, скилов ${pack.skills?.length ?? 0}, правил ${pack.rules?.length ?? 0} (${pack.stats?.durationMs ?? 0} мс).`
     );
+    return;
+  }
+  if (command === COMMAND_IDS.choosePrimaryWorkspace) {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length < 2) {
+      await vscode.window.showInformationMessage(
+        'DSH: multi-root не открыт — primary совпадает с единственной папкой.'
+      );
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      folders.map((folder) => folder.name),
+      { placeHolder: 'Primary воркспейс DSH' }
+    );
+    if (picked !== undefined) {
+      await vscode.workspace
+        .getConfiguration('dsh')
+        .update('primaryWorkspace', picked, vscode.ConfigurationTarget.Workspace);
+      await refreshWorkspaceIdentity();
+      updateStatusBar();
+    }
     return;
   }
   if (command === COMMAND_IDS.openSettings) {
@@ -461,7 +586,10 @@ async function pruneWorkspaces(): Promise<void> {
 
   const options: { registryDir?: string; keepDays?: number } = {};
   if (typeof registryDirectory === 'string' && registryDirectory.trim() !== '') {
-    options.registryDir = registryDirectory;
+    options.registryDir = translateWorkspacePath(registryDirectory, {
+      remoteName: vscode.env?.remoteName,
+      platform: process.platform
+    });
   }
   if (typeof keepDays === 'number' && Number.isFinite(keepDays)) {
     options.keepDays = keepDays;
