@@ -19,6 +19,7 @@ const logPath = process.env.FAKE_ACP_LOG;
 let nextSession = 1;
 let pendingPrompt;
 let pendingPermission;
+let pendingTool;
 const grandchildFile = process.env.FAKE_ACP_GRANDCHILD_PID_FILE;
 if (typeof grandchildFile === 'string' && grandchildFile !== '') {
   const grandchild = spawn(
@@ -69,6 +70,18 @@ lines.on('line', (line) => {
     }
     const pending = pendingPermission;
     pendingPermission = undefined;
+    if (pending !== undefined) {
+      pending();
+    }
+    return;
+  }
+
+  if (message.id === 901 && (message.result !== undefined || message.error !== undefined)) {
+    if (typeof logPath === 'string' && logPath !== '') {
+      appendFileSync(logPath, `response:901:${JSON.stringify(message.result ?? message.error)}\n`);
+    }
+    const pending = pendingTool;
+    pendingTool = undefined;
     if (pending !== undefined) {
       pending();
     }
@@ -135,6 +148,10 @@ lines.on('line', (line) => {
       respond(message.id, {});
       return;
 
+    case 'diagnostics/report':
+      respond(message.id, { accepted: true });
+      return;
+
     case 'session/prompt': {
       const sessionId = typeof params.sessionId === 'string' ? params.sessionId : '';
       const finish = (stopReason) => {
@@ -172,6 +189,26 @@ lines.on('line', (line) => {
       };
 
       const runUpdates = () => {
+        if (process.env.FAKE_ACP_TOOL === '1') {
+          pendingTool = () => {
+            emitUpdates();
+            setTimeout(() => finish('end_turn'), 10);
+          };
+          process.stdout.write(
+            `${JSON.stringify({
+              jsonrpc: '2.0',
+              id: 901,
+              method: 'tools/invoke',
+              params: {
+                tool: 'run_command',
+                command: 'echo hi',
+                sessionId,
+                cwd: process.cwd()
+              }
+            })}\n`
+          );
+          return;
+        }
         if (process.env.FAKE_ACP_PERMISSION === '1') {
           pendingPermission = () => {
             emitUpdates();

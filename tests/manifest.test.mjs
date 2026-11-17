@@ -44,7 +44,9 @@ const extraCommands = {
   'dsh.revertLastEdit': 'DSH: Revert Last Edit',
   // #014: read-only Kanban-панель.
   'dsh.kanban.refresh': 'DSH: Refresh Kanban',
-  'dsh.kanban.openCard': 'DSH: Open Kanban Card'
+  'dsh.kanban.openCard': 'DSH: Open Kanban Card',
+  // #015: отправка диагностики агенту.
+  'dsh.reportDiagnostics': 'DSH: Report Diagnostics'
 };
 
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */

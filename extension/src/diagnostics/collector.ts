@@ -71,7 +71,7 @@ export function diagnosticsPayload(report: DiagnosticsReport): {
   readonly truncated: boolean;
   readonly items: readonly {
     file: string;
-    severity: DiagnosticSeverityLike;
+    severity: string;
     message: string;
     line?: number;
     source?: string;
@@ -82,7 +82,7 @@ export function diagnosticsPayload(report: DiagnosticsReport): {
     truncated: report.truncated,
     items: report.items.map((diagnostic) => ({
       file: diagnostic.file,
-      severity: diagnostic.severity,
+      severity: String(diagnostic.severity),
       message: diagnostic.message,
       ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
       ...(diagnostic.source === undefined ? {} : { source: diagnostic.source })

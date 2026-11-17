@@ -189,6 +189,11 @@ export class TerminalBridge {
       this.#cancel = undefined;
 
       if (outcome === 'timeout' || outcome === 'cancelled') {
+        // Даём чтению шанс завершиться после таймаута/отмены, но не висим.
+        await Promise.race([
+          reading.catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 50))
+        ]);
         return this.#result(
           timedOut ? 'timeout' : 'error',
           buffer.text,

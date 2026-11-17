@@ -101,6 +101,13 @@ export interface AcpRuntimeOptions {
    * Ответ на ACP `session/request_permission`. По умолчанию — `cancelled`
    * (безопасный отказ); #011 сможет подключить сюда ApprovalBroker.
    */
+  /** Обработчик tool-запросов агента (run_command и т.п.). */
+  readonly toolHandler?:
+    | ((request: {
+        readonly method: string;
+        readonly params: Record<string, unknown>;
+      }) => Promise<unknown>)
+    | undefined;
   readonly permissionHandler?:
     | ((request: {
         readonly sessionId: string;
@@ -347,6 +354,10 @@ export class AcpRuntime {
           this.#workspacePath,
           now
         ) as unknown as DshMethodResult<M>;
+      case 'diagnostics.report':
+        return {
+          accepted: (result as { accepted?: unknown }).accepted === true
+        } as unknown as DshMethodResult<M>;
       default:
         throw new AcpError(`DSH-рантайм не поддерживает метод ${method}`);
     }
@@ -561,6 +572,12 @@ export class AcpRuntime {
 
   async #handleServerRequest(method: string, params: unknown): Promise<unknown> {
     if (method !== 'session/request_permission') {
+      if (this.#options.toolHandler !== undefined) {
+        return this.#options.toolHandler({
+          method,
+          params: (params ?? {}) as Record<string, unknown>
+        });
+      }
       throw new AcpError(`клиент не поддерживает метод ${method}`);
     }
     const record = (params ?? {}) as Record<string, unknown>;
