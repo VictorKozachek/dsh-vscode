@@ -28,6 +28,37 @@ export interface ChatPanelStateDto {
   readonly locale: 'ru' | 'en';
 }
 
+/** Sandbox-режим в форме New Session. */
+export type NewSessionSandboxDto = 'read-only' | 'workspace-write' | 'danger-full-access';
+
+/** Политика подтверждений в форме New Session. */
+export type NewSessionApprovalDto = 'ask' | 'auto' | 'never';
+
+/** Пресет рантайма для формы. */
+export interface NewSessionPresetDto {
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string | undefined;
+}
+
+/** Значения формы New Session (wire). */
+export interface NewSessionValuesDto {
+  readonly preset: string;
+  readonly model: string;
+  readonly sandbox: NewSessionSandboxDto;
+  readonly approval: NewSessionApprovalDto;
+  readonly title: string;
+  readonly confirmDanger: boolean;
+}
+
+/** Форма New Session для WebView. */
+export interface NewSessionFormDto {
+  readonly presets: readonly NewSessionPresetDto[];
+  readonly models: readonly string[];
+  readonly values: NewSessionValuesDto;
+  readonly errors: Readonly<Record<string, string>>;
+}
+
 /** Решение пользователя по approval-запросу. */
 export type ApprovalDecisionDto = 'allow' | 'allow-session' | 'deny';
 
@@ -67,6 +98,8 @@ export type WebviewMessage =
   | { readonly kind: 'ready' }
   | { readonly kind: 'stop' }
   | { readonly kind: 'sendMessage'; readonly text: string }
+  | { readonly kind: 'newSessionSubmit'; readonly values: NewSessionValuesDto }
+  | { readonly kind: 'newSessionCancel' }
   | { readonly kind: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionDto }
   | { readonly kind: 'approvalShowDiff'; readonly id: string }
   | { readonly kind: 'draftChanged'; readonly text: string }
@@ -78,6 +111,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'ready',
   'sendMessage',
   'stop',
+  'newSessionSubmit',
+  'newSessionCancel',
   'approvalResolve',
   'approvalShowDiff',
   'draftChanged',
@@ -115,6 +150,9 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolResult',
   'chatDone',
   'chatCancelled',
+  'newSessionOpen',
+  'newSessionUpdate',
+  'newSessionClose',
   'approvalRequest',
   'approvalResolved',
   'chatSession',
@@ -134,6 +172,9 @@ export type ExtensionMessage =
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResultDto }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
+  | { readonly type: 'newSessionOpen'; readonly form: NewSessionFormDto }
+  | { readonly type: 'newSessionUpdate'; readonly form: NewSessionFormDto }
+  | { readonly type: 'newSessionClose' }
   | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
   | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
@@ -161,6 +202,13 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
     const text = typeof record['text'] === 'string' ? record['text'].trim() : '';
     return text === '' ? null : { kind: 'sendMessage', text };
   }
+  if (type === 'newSessionCancel') {
+    return { kind: 'newSessionCancel' };
+  }
+  if (type === 'newSessionSubmit') {
+    const values = parseNewSessionValues(record['values']);
+    return values === null ? null : { kind: 'newSessionSubmit', values };
+  }
   if (type === 'approvalResolve') {
     const id = typeof record['id'] === 'string' ? record['id'] : '';
     const decision = record['decision'];
@@ -184,6 +232,31 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
     return { kind: 'retryChat' };
   }
   return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseNewSessionValues(raw: unknown): NewSessionValuesDto | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const preset = typeof raw['preset'] === 'string' ? raw['preset'].trim() : '';
+  const model = typeof raw['model'] === 'string' ? raw['model'].trim() : '';
+  const title = typeof raw['title'] === 'string' ? raw['title'] : '';
+  const sandbox = raw['sandbox'];
+  const approval = raw['approval'];
+  const confirmDanger = raw['confirmDanger'];
+  if (
+    preset === '' ||
+    model === '' ||
+    (sandbox !== 'read-only' && sandbox !== 'workspace-write' && sandbox !== 'danger-full-access') ||
+    (approval !== 'ask' && approval !== 'auto' && approval !== 'never')
+  ) {
+    return null;
+  }
+  return { preset, model, sandbox, approval, title, confirmDanger: confirmDanger === true };
 }
 
 /** Ссылки на ассеты, которые Vite положил в `webview/dist/index.html`. */
@@ -372,9 +445,11 @@ export class ChatSession {
     state: () => Omit<ChatPanelStateDto, 'status'>,
     emit: (message: ExtensionMessage) => void = () => undefined
   ): ExtensionMessage[] {
-    // Подтверждения обслуживает ApprovalBroker (#009), привязку к сессии —
-    // ChatController (#024); каркас эти сообщения не трогает.
+    // New Session (#023) обслуживает NewSessionController, подтверждения —
+    // ApprovalBroker (#009), привязку к сессии — ChatController (#024).
     if (
+      message.kind === 'newSessionSubmit' ||
+      message.kind === 'newSessionCancel' ||
       message.kind === 'approvalResolve' ||
       message.kind === 'approvalShowDiff' ||
       message.kind === 'draftChanged' ||

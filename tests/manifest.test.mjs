@@ -67,6 +67,7 @@ const expectedSettings = {
   // Не из §9: срок хранения записей реестра воркспейсов (#003), 90 дней.
   'dsh.workspace.keepDays': { type: 'number', default: 90 },
   'dsh.primaryWorkspace': { type: 'string', default: '' },
+  'dsh.models': { type: 'array', default: [] },
   'dsh.kanban.enabled': { type: 'boolean', default: false },
   'dsh.telemetry.enabled': { type: 'boolean', default: false }
 };

@@ -24,6 +24,8 @@ function createFakeVscode({ settings = {} } = {}) {
     commands: new Map(),
     changeListeners: [],
     viewProviders: new Map(),
+    webviewMessages: [],
+    webviewListeners: [],
     settings,
     workspaceFolders: [{ name: 'demo-project', index: 0, uri: { fsPath: '/demo-project' } }]
   };
@@ -49,6 +51,18 @@ function createFakeVscode({ settings = {} } = {}) {
   const fake = {
     StatusBarAlignment: { Left: 1, Right: 2 },
     ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
+    Uri: {
+      joinPath(uri, ...parts) {
+        const joined = [uri.path, ...parts].join('/');
+        return { path: joined, fsPath: joined, toString: () => `file://${joined}` };
+      },
+      file(filePath) {
+        return { path: filePath, fsPath: filePath, toString: () => `file://${filePath}` };
+      },
+      parse(value) {
+        return { path: value, fsPath: value, toString: () => value };
+      }
+    },
     TreeItem: FakeTreeItem,
     TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
     ThemeIcon: FakeThemeIcon,
@@ -132,6 +146,11 @@ function createFakeVscode({ settings = {} } = {}) {
       }
     },
     workspace: {
+      fs: {
+        async readFile() {
+          throw new Error('ENOENT');
+        }
+      },
       get workspaceFolders() {
         return state.workspaceFolders;
       },
@@ -175,6 +194,109 @@ function loadExtensionWithFakeVscode(fake) {
     moduleApi._load = originalLoad;
   }
 }
+
+function resolveChatView(state) {
+  const provider = state.viewProviders.get('dsh.chat');
+  const view = {
+    webview: {
+      options: {},
+      html: '',
+      cspSource: 'vscode-resource:',
+      async postMessage(message) {
+        state.webviewMessages.push(message);
+        return true;
+      },
+      onDidReceiveMessage(listener) {
+        state.webviewListeners.push(listener);
+        return { dispose() {} };
+      },
+      asWebviewUri(uri) {
+        return { toString: () => uri.toString() };
+      }
+    },
+    onDidDispose() {
+      return { dispose() {} };
+    }
+  };
+  provider.resolveWebviewView(view);
+  return view;
+}
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('активация: New Session открывает форму и создаёт сессию с выбором', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.defaultModel': 'deepseek-v4' }
+  });
+  const extension = loadExtensionWithFakeVscode(fake);
+  const globalState = new Map();
+  const context = {
+    subscriptions: [],
+    extensionUri: { path: '/ext', fsPath: '/ext', toString: () => 'file:///ext' },
+    globalState: {
+      get(key, fallback) {
+        return globalState.has(key) ? globalState.get(key) : fallback;
+      },
+      async update(key, value) {
+        globalState.set(key, value);
+      }
+    }
+  };
+  extension.activate(context);
+  resolveChatView(state);
+
+  const created = [];
+  extension.setSessionManager({
+    state: { workspaceId: 'ws', sessionId: null, title: null, status: 'idle', turnId: null, updatedAt: '' },
+    async create(options) {
+      created.push(options);
+      return { sessionId: 'sess-1', title: options.title ?? null };
+    },
+    on() {
+      return { dispose() {} };
+    },
+    async list() {
+      return [];
+    }
+  });
+
+  await state.commands.get('dsh.newSession')();
+  await tick();
+  const open = state.webviewMessages.find((message) => message.type === 'newSessionOpen');
+  assert.ok(open, 'форма открыта');
+  assert.equal(open.form.values.model, 'deepseek-v4');
+  const standard = open.form.presets.find((preset) => preset.id === 'standard');
+  assert.ok(standard, 'standard есть в форме');
+  assert.equal(standard.description, undefined, 'без русского описания для en-UI');
+
+  await state.webviewListeners.at(-1)({
+    type: 'newSessionSubmit',
+    values: {
+      preset: 'standard',
+      model: 'deepseek-v4',
+      sandbox: 'danger-full-access',
+      approval: 'never',
+      title: '',
+      confirmDanger: true
+    }
+  });
+  await tick();
+  await tick();
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0].preset, 'standard');
+  assert.equal(created[0].model, 'deepseek-v4');
+  assert.equal(created[0].sandbox, 'danger-full-access');
+  assert.equal(created[0].approval, 'never');
+  assert.match(created[0].title, /^standard · /);
+  assert.ok(state.webviewMessages.some((message) => message.type === 'newSessionClose'));
+  assert.deepEqual(globalState.get('dsh.newSession.last'), {
+    preset: 'standard',
+    model: 'deepseek-v4',
+    sandbox: 'danger-full-access',
+    approval: 'never'
+  });
+});
 
 test('активация: статус-бар показывает имя открытой папки', () => {
   const { fake, state } = createFakeVscode();
@@ -358,7 +480,6 @@ test('активация: рантайм #021 стартует из Extension Ho
   await rm(workspace, { recursive: true, force: true });
 });
 
-
 test('multi-root: primary из настройки виден в статус-баре и выбирается командой', async () => {
   const { fake, state } = createFakeVscode({
     settings: { 'dsh.primaryWorkspace': 'second' }
@@ -423,4 +544,47 @@ test('remote: отсутствие dsh показывает инструкцию
     'инструкция появилась'
   );
   assert.equal(state.errors.length, 0, 'расширение не падает');
+});
+
+test('активация: форма восстанавливает последнюю выбранную модель из globalState', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.defaultModel': 'deepseek-chat', 'dsh.models': ['custom-model'] }
+  });
+  const extension = loadExtensionWithFakeVscode(fake);
+  const globalState = new Map([
+    ['dsh.newSession.last', { preset: 'standard', model: 'custom-model', sandbox: 'read-only', approval: 'never' }]
+  ]);
+  const context = {
+    subscriptions: [],
+    extensionUri: { path: '/ext', fsPath: '/ext', toString: () => 'file:///ext' },
+    globalState: {
+      get(key, fallback) {
+        return globalState.has(key) ? globalState.get(key) : fallback;
+      },
+      async update(key, value) {
+        globalState.set(key, value);
+      }
+    }
+  };
+  extension.activate(context);
+  resolveChatView(state);
+  extension.setSessionManager({
+    state: { workspaceId: 'ws', sessionId: null, title: null, status: 'idle', turnId: null, updatedAt: '' },
+    async create() {
+      return { sessionId: 'sess-1' };
+    },
+    on() {
+      return { dispose() {} };
+    },
+    async list() {
+      return [];
+    }
+  });
+
+  await state.commands.get('dsh.newSession')();
+  await tick();
+  const open = state.webviewMessages.find((message) => message.type === 'newSessionOpen');
+  assert.equal(open.form.values.model, 'custom-model');
+  assert.equal(open.form.values.sandbox, 'read-only');
+  assert.equal(open.form.values.approval, 'never');
 });

@@ -231,6 +231,14 @@
           "type": "string",
           "default": "",
           "description": "Имя primary-папки multi-root (пусто — первая по index)."
+        },
+        "dsh.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Дополнительные модели профиля для формы New Session."
         }
       }
     },
