@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
-import { registerSessionsView } from './views/sessionsView';
+import { notifySessionsManagerChanged, registerSessionsView } from './views/sessionsView';
 import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
@@ -45,6 +45,8 @@ let sessionManager: SessionManager | null = null;
 /** Подключить менеджер сессий (вызывает #011 после старта моста). */
 export function setSessionManager(manager: SessionManager | null): void {
   sessionManager = manager;
+  // Панель Sessions подписывается на события только что появившегося менеджера.
+  notifySessionsManagerChanged();
 }
 
 /** Команды, которые обслуживает SessionManager (не заглушки). */

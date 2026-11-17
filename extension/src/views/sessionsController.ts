@@ -23,8 +23,10 @@ export interface SessionsSource {
     listener: (snapshot: SessionSnapshot) => void
   ): { dispose(): void };
   resume(sessionId: string): Promise<SessionSnapshot>;
-  create(): Promise<SessionSnapshot>;
+  create(options?: { readonly title?: string }): Promise<SessionSnapshot>;
   pause(): Promise<SessionSnapshot>;
+  /** Уведомление о появлении/смене менеджера (для перерисовки). */
+  onSourceChanged?(listener: () => void): { dispose(): void };
   /** Необязательные действия: появятся вместе с методами рантайма. */
   rename?(sessionId: string, title: string): Promise<void>;
   remove?(sessionId: string): Promise<void>;
@@ -95,6 +97,14 @@ export class SessionsController {
         })
       );
     }
+    const onSourceChanged = this.#source.onSourceChanged;
+    if (onSourceChanged !== undefined) {
+      this.#subscriptions.push(
+        onSourceChanged.call(this.#source, () => {
+          void this.refresh();
+        })
+      );
+    }
     this.#loop.start();
     void this.refresh();
   }
@@ -155,9 +165,9 @@ export class SessionsController {
   }
 
   /** `+`: создание сессии (диалог #023 появится позже). */
-  async create(): Promise<SessionSnapshot | null> {
+  async create(title?: string): Promise<SessionSnapshot | null> {
     try {
-      const snapshot = await this.#source.create();
+      const snapshot = await this.#source.create(title === undefined ? {} : { title });
       await this.refresh();
       return snapshot;
     } catch (error) {

@@ -124,8 +124,23 @@ export function buildSessionsView(input: BuildSessionsInput): SessionsViewState 
   }
 
   const activeSessionId = input.snapshot.sessionId;
+  const sessions = [...input.sessions];
+  // Активная сессия может отсутствовать в list (ACP отдаёт её после close) —
+  // дополняем из снимка, иначе она не отрисуется.
+  if (
+    activeSessionId !== null &&
+    !sessions.some((session) => session.id === activeSessionId)
+  ) {
+    sessions.push({
+      id: activeSessionId,
+      workspaceId: input.snapshot.workspaceId,
+      ...(input.snapshot.title === null ? {} : { title: input.snapshot.title }),
+      updatedAt: input.snapshot.updatedAt
+    });
+  }
+
   const byGroup = new Map<SessionGroupKey, SessionViewItem[]>();
-  for (const session of input.sessions) {
+  for (const session of sessions) {
     const item = toItem(session, activeSessionId);
     const group = bucketOf(session.updatedAt, input.now);
     const list = byGroup.get(group) ?? [];
@@ -150,23 +165,47 @@ export function buildSessionsView(input: BuildSessionsInput): SessionsViewState 
     groups.push({ key, label: GROUP_LABELS[key], items });
   }
 
+  // Активная сессия — первой во всём списке: её группа поднимается наверх.
+  const activeGroupIndex = groups.findIndex((group) =>
+    group.items.some((item) => item.badge === 'active')
+  );
+  if (activeGroupIndex > 0) {
+    const [activeGroup] = groups.splice(activeGroupIndex, 1);
+    if (activeGroup !== undefined) {
+      groups.unshift(activeGroup);
+    }
+  }
+
   return { kind: 'ready', groups, activeSessionId };
 }
 
 function toItem(session: DshSessionSummary, activeSessionId: string | null): SessionViewItem {
   const active = session.id === activeSessionId;
-  const badge: SessionBadge = active ? 'active' : 'idle';
+  const badge: SessionBadge = active
+    ? 'active'
+    : session.status === 'error'
+      ? 'error'
+      : 'idle';
+  const details = [
+    active ? 'активна' : session.status === 'error' ? 'ошибка' : shortDate(session.updatedAt),
+    session.preset ?? null,
+    session.model ?? null
+  ].filter((value): value is string => value !== null && value !== '');
   return {
     id: session.id,
     label: sessionLabel(session),
-    description: active ? 'активна' : shortDate(session.updatedAt),
+    description: details.join(' · '),
     tooltip: [
       sessionLabel(session),
       `id: ${session.id}`,
       `воркспейс: ${session.workspaceId}`,
+      session.preset === undefined ? null : `пресет: ${session.preset}`,
+      session.model === undefined ? null : `модель: ${session.model}`,
       `обновлена: ${session.updatedAt}`,
       active ? 'клик: уже активна' : 'клик: сделать активной'
-    ].join('\n'),
+    ]
+      .filter((line): line is string => line !== null)
+      .join('\n'),
     badge,
     contextValue: active ? 'dshSession.active' : 'dshSession',
     updatedAt: session.updatedAt,

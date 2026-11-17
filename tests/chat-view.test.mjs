@@ -194,4 +194,17 @@ test('манифест: контейнер DSH в activity bar и view dsh.chat'
   const sessions = views.find((view) => view.id === 'dsh.sessions');
   assert.equal(sessions.type, 'tree');
   assert.equal(sessions.name, 'Sessions');
+  assert.equal(sessions.icon, 'media/dsh.svg');
+
+  const commands = manifest.contributes.commands;
+  const create = commands.find((command) => command.command === 'dsh.sessions.create');
+  const refresh = commands.find((command) => command.command === 'dsh.sessions.refresh');
+  assert.equal(create.icon, '$(add)');
+  assert.equal(refresh.icon, '$(refresh)');
+
+  const welcome = manifest.contributes.viewsWelcome.find(
+    (entry) => entry.view === 'dsh.sessions' && entry.when === 'dsh.sessions.error'
+  );
+  assert.ok(welcome, 'viewsWelcome для ошибки есть');
+  assert.match(welcome.contents, /dsh\.openSettings/);
 });

@@ -10,8 +10,10 @@
 import * as vscode from 'vscode';
 
 import type { SessionManager } from '../sessions/sessionManager';
-import { SessionsController, type SessionsSource } from './sessionsController';
-import type { SessionGroup, SessionViewItem, SessionsViewState } from './sessionsModel';
+import { SessionsController } from './sessionsController';
+import { SessionManagerSource } from './sessionsSource';
+import { buildSessionsNodes, type SessionsNode } from './sessionsNodes';
+import type { SessionsViewState } from './sessionsModel';
 
 /** Идентификаторы панели и команд. */
 export const SESSIONS_VIEW_ID = 'dsh.sessions';
@@ -31,55 +33,7 @@ export interface SessionsViewOptions {
   readonly log: (line: string) => void;
 }
 
-type TreeNode =
-  | { readonly kind: 'group'; readonly group: SessionGroup }
-  | { readonly kind: 'session'; readonly item: SessionViewItem }
-  | { readonly kind: 'message'; readonly label: string; readonly themeIcon: string; readonly command?: vscode.Command };
-
-/** Источник поверх поздно подключаемого `SessionManager`. */
-function lazySource(getManager: () => SessionManager | null): SessionsSource {
-  const requireManager = (): SessionManager => {
-    const manager = getManager();
-    if (manager === null) {
-      throw new Error('менеджер сессий не подключён: откройте воркспейс');
-    }
-    return manager;
-  };
-  return {
-    async list() {
-      return requireManager().list();
-    },
-    get state() {
-      const manager = getManager();
-      return (
-        manager?.state ?? {
-          workspaceId: '',
-          sessionId: null,
-          title: null,
-          status: 'offline' as const,
-          turnId: null,
-          updatedAt: new Date(0).toISOString()
-        }
-      );
-    },
-    on(event, listener) {
-      const manager = getManager();
-      if (manager === null) {
-        return { dispose() {} };
-      }
-      return manager.on(event, listener);
-    },
-    async resume(sessionId) {
-      return requireManager().resume(sessionId);
-    },
-    async create() {
-      return requireManager().create();
-    },
-    async pause() {
-      return requireManager().pause();
-    }
-  };
-}
+type TreeNode = SessionsNode;
 
 /** Провайдер дерева: рендерит состояние контроллера. */
 export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
@@ -108,28 +62,8 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   getChildren(element?: TreeNode): TreeNode[] {
-    if (element === undefined) {
-      switch (this.#state.kind) {
-        case 'loading':
-          return [{ kind: 'message', label: 'Загрузка сессий…', themeIcon: 'loading~spin' }];
-        case 'error':
-          return [
-            {
-              kind: 'message',
-              label: `Ошибка: ${this.#state.error.message}`,
-              themeIcon: 'error',
-              command: {
-                command: SESSIONS_COMMANDS.refresh,
-                title: 'Повторить',
-                arguments: []
-              }
-            }
-          ];
-        case 'empty':
-          return [];
-        default:
-          return this.#state.groups.map((group) => ({ kind: 'group', group }));
-      }
+    if (element === undefined || element.kind === 'message') {
+      return [...buildSessionsNodes(this.#state)];
     }
     if (element.kind === 'group') {
       return element.group.items.map((item) => ({ kind: 'session', item }));
@@ -146,6 +80,12 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     if (node.kind === 'message') {
       const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
       item.iconPath = new vscode.ThemeIcon(node.themeIcon);
+      if (node.description !== undefined) {
+        item.description = node.description;
+      }
+      if (node.tooltip !== undefined) {
+        item.tooltip = node.tooltip;
+      }
       if (node.command !== undefined) {
         item.command = node.command;
       }
@@ -169,6 +109,14 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 }
 
+/** Уведомление панели о появлении менеджера (#011 вызывает после setSessionManager). */
+let notifyManagerChanged: (() => void) | undefined;
+
+/** Сообщить панели, что `SessionManager` появился/сменился. */
+export function notifySessionsManagerChanged(): void {
+  notifyManagerChanged?.();
+}
+
 /** Подключает панель Sessions к расширению. */
 export function registerSessionsView(
   context: vscode.ExtensionContext,
@@ -180,8 +128,12 @@ export function registerSessionsView(
     showCollapseAll: false
   });
 
+  const source = new SessionManagerSource(options.getManager);
+  notifyManagerChanged = () => {
+    source.refreshManager();
+  };
   const controller = new SessionsController({
-    source: lazySource(options.getManager),
+    source,
     view: { render: (state) => provider.render(state) },
     logger: options.log
   });
@@ -192,10 +144,19 @@ export function registerSessionsView(
 
   const commands: vscode.Disposable[] = [
     vscode.commands.registerCommand(SESSIONS_COMMANDS.create, async () => {
-      const snapshot = await controller.create();
+      // Заглушка #023: спрашиваем только заголовок; полный диалог —
+      // в New Session (когда #023 сольётся).
+      const title = await vscode.window.showInputBox({
+        prompt: 'Название сессии (необязательно)',
+        ignoreFocusOut: true
+      });
+      if (title === undefined) {
+        return;
+      }
+      const snapshot = await controller.create(title.trim() === '' ? undefined : title.trim());
       if (snapshot !== null) {
         await notify(
-          `DSH: создана сессия ${snapshot.sessionId ?? '?'}; диалог создания появится в #023.`
+          `DSH: создана сессия ${snapshot.sessionId ?? '?'}; полный диалог создания появится в #023.`
         );
       }
     }),
@@ -286,6 +247,7 @@ export function registerSessionsView(
   return {
     dispose(): void {
       visibility?.dispose();
+      notifyManagerChanged = undefined;
       controller.dispose();
       for (const command of commands) {
         command.dispose();

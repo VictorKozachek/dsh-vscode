@@ -38,7 +38,8 @@
           "id": "dsh.sessions",
           "name": "Sessions",
           "type": "tree",
-          "contextualTitle": "DSH"
+          "contextualTitle": "DSH",
+          "icon": "media/dsh.svg"
         }
       ]
     },
@@ -91,12 +92,14 @@
       {
         "command": "dsh.sessions.create",
         "title": "Create Session",
-        "category": "DSH"
+        "category": "DSH",
+        "icon": "$(add)"
       },
       {
         "command": "dsh.sessions.refresh",
         "title": "Refresh Sessions",
-        "category": "DSH"
+        "category": "DSH",
+        "icon": "$(refresh)"
       },
       {
         "command": "dsh.sessions.select",
@@ -216,6 +219,11 @@
         "view": "dsh.sessions",
         "contents": "Сессий нет — создайте первую.\n[Создать сессию](command:dsh.sessions.create)",
         "when": "dsh.sessions.empty"
+      },
+      {
+        "view": "dsh.sessions",
+        "contents": "Рантайм DSH недоступен. [Повторить](command:dsh.sessions.refresh) · [Настройки](command:dsh.openSettings)",
+        "when": "dsh.sessions.error"
       }
     ],
     "menus": {

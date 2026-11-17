@@ -147,3 +147,57 @@ test('SessionRefreshLoop: опрос только пока видимо, reset �
   assert.equal(pending().length, 0);
   assert.equal(loop.running, false);
 });
+
+test('активная сессия первой глобально: её группа поднимается наверх', () => {
+  const view = buildSessionsView({
+    now: NOW,
+    snapshot: snapshot({ sessionId: 'sess-old' }),
+    sessions: [
+      session('sess-old', '2026-10-01T10:00:00.000Z'),
+      session('sess-today', '2026-11-13T10:00:00.000Z')
+    ]
+  });
+  assert.equal(view.kind, 'ready');
+  assert.equal(view.groups[0].key, 'earlier');
+  assert.equal(view.groups[0].items[0].id, 'sess-old');
+  assert.equal(view.groups[0].items[0].badge, 'active');
+});
+
+test('активная сессия дополняется из снимка, если её нет в list', () => {
+  const view = buildSessionsView({
+    now: NOW,
+    snapshot: snapshot({
+      sessionId: 'sess-active',
+      title: 'Активная',
+      updatedAt: '2026-11-13T12:00:00.000Z'
+    }),
+    sessions: [session('sess-other', '2026-11-13T10:00:00.000Z')]
+  });
+  assert.equal(view.kind, 'ready');
+  const ids = view.groups.flatMap((group) => group.items.map((item) => item.id));
+  assert.ok(ids.includes('sess-active'));
+  assert.equal(ids[0], 'sess-active');
+  const active = view.groups[0].items[0];
+  assert.equal(active.badge, 'active');
+  assert.equal(active.label, 'Активная');
+});
+
+test('подпись с пресетом и моделью, бейдж error для статуса error', () => {
+  const view = buildSessionsView({
+    now: NOW,
+    snapshot: snapshot({ sessionId: null }),
+    sessions: [
+      session('sess-1', '2026-11-13T10:00:00.000Z', {
+        preset: 'worker',
+        model: 'deepseek-v4',
+        status: 'error'
+      })
+    ]
+  });
+  assert.equal(view.kind, 'ready');
+  const item = view.groups[0].items[0];
+  assert.match(item.description, /worker/);
+  assert.match(item.description, /deepseek-v4/);
+  assert.equal(item.badge, 'error');
+  assert.match(item.tooltip, /пресет: worker/);
+});
