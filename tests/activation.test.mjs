@@ -28,8 +28,29 @@ function createFakeVscode({ settings = {} } = {}) {
     workspaceFolders: [{ name: 'demo-project', index: 0, uri: { fsPath: '/demo-project' } }]
   };
 
+  class FakeTreeItem {
+    constructor(label, collapsibleState) {
+      this.label = label;
+      this.collapsibleState = collapsibleState;
+      this.description = '';
+      this.tooltip = '';
+      this.contextValue = '';
+      this.command = undefined;
+      this.iconPath = undefined;
+      this.id = undefined;
+    }
+  }
+  class FakeThemeIcon {
+    constructor(id) {
+      this.id = id;
+    }
+  }
+
   const fake = {
     StatusBarAlignment: { Left: 1, Right: 2 },
+    TreeItem: FakeTreeItem,
+    TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+    ThemeIcon: FakeThemeIcon,
     env: { language: 'ru' },
     window: {
       createStatusBarItem(id, alignment, priority) {
@@ -75,6 +96,24 @@ function createFakeVscode({ settings = {} } = {}) {
       registerWebviewViewProvider(viewType, provider) {
         state.viewProviders.set(viewType, provider);
         return { dispose() {} };
+      },
+      createTreeView(viewId, options) {
+        state.treeViews ??= new Map();
+        state.treeViews.set(viewId, options);
+        return {
+          onDidChangeVisibility(listener) {
+            state.treeVisibilityListeners ??= [];
+            state.treeVisibilityListeners.push(listener);
+            return { dispose() {} };
+          },
+          dispose() {}
+        };
+      },
+      async showInputBox() {
+        return undefined;
+      },
+      async showWarningMessage(_message, _options, ...items) {
+        return items[0];
       }
     },
     commands: {
@@ -165,6 +204,14 @@ test('активация: все команды каркаса зарегист�
     'dsh.reloadContext',
     'dsh.resumeLastSession',
     'dsh.revertLastEdit',
+    'dsh.sessions.create',
+    'dsh.sessions.delete',
+    'dsh.sessions.openTranscript',
+    'dsh.sessions.refresh',
+    'dsh.sessions.rename',
+    'dsh.sessions.resume',
+    'dsh.sessions.select',
+    'dsh.sessions.stop',
     'dsh.showContextInspector',
     'dsh.stopAgent',
     'dsh.switchWorkspace'
@@ -242,6 +289,19 @@ test('активация: DSH: Prune Workspaces чистит реестр по �
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Sessions «+» открывает диалог New Session (#023), а не inputBox', async () => {
+  const { fake, state } = createFakeVscode();
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  await state.commands.get('dsh.sessions.create')();
+  assert.ok(
+    state.executed.some((item) => item.id === 'dsh.newSession'),
+    'вызван dsh.newSession'
+  );
+  extension.deactivate();
 });
 
 test('активация: рантайм #021 создаётся из настроек, без спавна при старте', () => {
