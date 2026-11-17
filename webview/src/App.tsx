@@ -5,6 +5,7 @@ import { ApprovalCard } from './approvals/ApprovalCard';
 import type { ApprovalDecisionKind } from './approvals/approvalModel';
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
 import { NewSessionModal } from './newSession/NewSessionModal';
+import { SettingsScreen } from './context/SettingsScreen';
 import { DraftStore, switchSessionDraft } from './chat/drafts';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
@@ -38,6 +39,8 @@ export function App(): ReactElement {
   const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
   const [newSession, setNewSession] = useState<NewSessionFormDto | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsValues, setSettingsValues] = useState<Readonly<Record<string, unknown>>>({});
   const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
@@ -125,6 +128,11 @@ export function App(): ReactElement {
         }
         case 'newSessionClose': {
           setNewSession(null);
+          break;
+        }
+        case 'settingsOpen': {
+          setSettingsValues(message.values);
+          setSettingsOpen(true);
           break;
         }
         case 'approvalRequest': {
@@ -307,6 +315,29 @@ export function App(): ReactElement {
         disabled={session !== null && session.sessionId === null}
         onCreateSession={openNewSession}
       />
+      {settingsOpen ? (
+        <div className="dsh-modal-backdrop" role="dialog" aria-label="DSH settings">
+          <div className="dsh-modal">
+            <h2 className="dsh-modal__title">Настройки DSH</h2>
+            <SettingsScreen
+              initial={settingsValues}
+              onApply={(values) => {
+                postToExtension({ type: 'settingsApply', values });
+                setSettingsOpen(false);
+              }}
+            />
+            <div className="dsh-modal__actions">
+              <button
+                type="button"
+                className="dsh-button"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {newSession === null ? null : (
         <NewSessionModal
           t={t}

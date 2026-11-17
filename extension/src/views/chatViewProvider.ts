@@ -19,7 +19,8 @@ import { dispatchWebviewMessage } from './chatDispatch';
 import type {
   ApprovalDispatchPort,
   ChatSessionDispatchPort,
-  NewSessionDispatchPort
+  NewSessionDispatchPort,
+  SettingsDispatchPort
 } from './chatDispatch';
 import {
   ChatSession,
@@ -53,6 +54,8 @@ export interface ChatViewProviderOptions {
   readonly approvals?: ApprovalDispatchPort | undefined;
   /** Привязка чата к сессии (#024). */
   readonly chatSession?: ChatSessionDispatchPort | undefined;
+  /** Экран настроек dsh.* (#013). */
+  readonly settings?: SettingsDispatchPort | undefined;
 }
 
 const MAX_MESSAGES = 200;
@@ -201,7 +204,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       log: (line) => this.#options.log?.(line),
       newSession: this.#options.newSession,
       approvals: this.#approvals,
-      chatSession: this.#chatSession
+      chatSession: this.#chatSession,
+      settings: this.#options.settings
     });
   }
 
