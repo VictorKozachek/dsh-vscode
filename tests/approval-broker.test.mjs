@@ -29,12 +29,14 @@ function makeBroker({
   toolPolicies,
   audit,
   resolveRealPath,
+  probePath,
+  workspaceRoot = ROOT,
   onResolved,
   logger
 } = {}) {
   const audits = [];
   const broker = new ApprovalBroker({
-    context: { workspaceRoot: ROOT, sandboxMode, policy, toolPolicies },
+    context: { workspaceRoot, sandboxMode, policy, toolPolicies },
     evaluate: evaluateApproval,
     ui: ui ?? { ask: () => undefined },
     audit: audit ?? {
@@ -44,7 +46,9 @@ function makeBroker({
     },
     clock: () => new Date(NOW),
     // По умолчанию «путь уже реальный»: тесты политики не про symlink.
-    resolveRealPath: resolveRealPath ?? (async (absolutePath) => absolutePath),
+    resolveRealPath:
+      probePath === undefined ? (resolveRealPath ?? (async (absolutePath) => absolutePath)) : resolveRealPath,
+    probePath,
     onResolved,
     logger
   });
@@ -363,103 +367,123 @@ test('resolved-путь внутри root при auto разрешается к�
   broker.dispose();
 });
 
-test('битая финальная symlink и ошибка пробы — fail-closed', async () => {
-  const blocked = {
-    policy: 'auto',
-    ui: { ask: () => Promise.resolve('deny') },
-    probePath: async (absolutePath) =>
-      absolutePath.endsWith('/repo/link')
-        ? { status: 'blocked', reason: 'битая ссылка' }
-        : { status: 'ok', realPath: absolutePath }
-  };
-  const { broker } = makeBroker(blocked);
+test('symlink-граница: реальный workspaceRoot + createNodePathProbe', async () => {
+  const { mkdtemp, symlink, writeFile, realpath } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const nodePath = await import('node:path');
+
+  const root = await realpath(await mkdtemp(nodePath.join(os.tmpdir(), 'dsh-approvals-')));
+  const outside = await mkdtemp(nodePath.join(os.tmpdir(), 'dsh-approvals-outside-'));
+  await writeFile(nodePath.join(root, 'existing.ts'), 'x');
+  await writeFile(nodePath.join(outside, 'outside.ts'), 'x');
+  await symlink(nodePath.join(outside, 'outside.ts'), nodePath.join(root, 'link-file'), 'file');
+  await symlink(outside, nodePath.join(root, 'link-dir'), 'dir');
+  await symlink(nodePath.join(outside, 'missing.ts'), nodePath.join(root, 'broken-file'), 'file');
+  await symlink(nodePath.join(outside, 'missing-dir'), nodePath.join(root, 'broken-dir'), 'dir');
+
+  const denied = () => Promise.resolve('deny');
+  const make = (overrides = {}) =>
+    makeBroker({
+      policy: 'auto',
+      workspaceRoot: root,
+      ui: { ask: denied },
+      probePath: createNodePathProbe(),
+      ...overrides
+    });
+
+  // ok внутри root — auto allow.
+  const inside = make();
+  assert.equal(await inside.broker.request(writeRequest({ id: 'ok', targetPath: 'existing.ts' })), 'allow');
+  inside.broker.dispose();
+
+  // ok, но symlink ведёт наружу — обязательный ask (ui отвечает deny).
+  const viaLink = make();
   assert.equal(
-    await broker.request(writeRequest({ id: 'broken-final', targetPath: '/repo/link' })),
+    await viaLink.broker.request(writeRequest({ id: 'link-file', targetPath: 'link-file' })),
     'deny'
   );
-  broker.dispose();
+  viaLink.broker.dispose();
 
-  const throwing = makeBroker({
-    policy: 'auto',
-    ui: { ask: () => Promise.resolve('deny') },
+  // битая финальная ссылка — blocked → ask/deny.
+  const broken = make();
+  assert.equal(
+    await broken.broker.request(writeRequest({ id: 'broken-file', targetPath: 'broken-file' })),
+    'deny'
+  );
+  broken.broker.dispose();
+
+  // новый файл внутри root (каталог ещё не создан) — allow.
+  const newInside = make();
+  assert.equal(
+    await newInside.broker.request(
+      writeRequest({ id: 'new-inside', targetPath: 'newdir/new.ts' })
+    ),
+    'allow'
+  );
+  newInside.broker.dispose();
+
+  // новый файл под существующим symlink наружу — ask/deny.
+  const newViaLink = make();
+  assert.equal(
+    await newViaLink.broker.request(
+      writeRequest({ id: 'new-via-link', targetPath: 'link-dir/new.ts' })
+    ),
+    'deny'
+  );
+  newViaLink.broker.dispose();
+
+  // новый файл под битым symlink — blocked → ask/deny.
+  const newUnderBroken = make();
+  assert.equal(
+    await newUnderBroken.broker.request(
+      writeRequest({ id: 'new-under-broken', targetPath: 'broken-dir/new.ts' })
+    ),
+    'deny'
+  );
+  newUnderBroken.broker.dispose();
+
+  // проба бросает — blocked, fail-closed.
+  const throwing = make({
     probePath: async () => {
       throw new Error('EACCES');
     }
   });
   assert.equal(
-    await throwing.broker.request(writeRequest({ id: 'probe-throws', targetPath: '/repo/a.ts' })),
+    await throwing.broker.request(writeRequest({ id: 'throw', targetPath: 'existing.ts' })),
     'deny'
   );
   throwing.broker.dispose();
+
+  // легаси resolveRealPath(null) — fail-closed, а не missing.
+  const legacy = makeBroker({
+    policy: 'auto',
+    workspaceRoot: root,
+    ui: { ask: denied },
+    probePath: undefined,
+    resolveRealPath: async () => null
+  });
+  assert.equal(
+    await legacy.broker.request(writeRequest({ id: 'legacy-null', targetPath: 'existing.ts' })),
+    'deny'
+  );
+  legacy.broker.dispose();
 });
 
-test('битая symlink-предок нового файла — fail-closed', async () => {
+test('probePath вызывается для target и предка', async () => {
+  const calls = [];
   const { broker } = makeBroker({
     policy: 'auto',
-    ui: { ask: () => Promise.resolve('deny') },
+    workspaceRoot: '/repo',
+    ui: { ask: () => Promise.resolve('allow') },
     probePath: async (absolutePath) => {
-      if (absolutePath === '/repo/link') {
-        return { status: 'blocked', reason: 'битая ссылка' };
-      }
-      if (absolutePath.startsWith('/repo/link/')) {
-        return { status: 'missing' };
-      }
-      return { status: 'ok', realPath: absolutePath };
+      calls.push(absolutePath);
+      return absolutePath === '/repo'
+        ? { status: 'ok', realPath: '/repo' }
+        : { status: 'missing' };
     }
   });
-
-  assert.equal(
-    await broker.request(
-      writeRequest({ id: 'broken-ancestor', targetPath: '/repo/link/newdir/file.ts' })
-    ),
-    'deny'
-  );
+  await broker.request(writeRequest({ id: 'probe-called', targetPath: '/repo/newdir/file.ts' }));
+  assert.ok(calls.includes('/repo/newdir/file.ts'), 'target проверен');
+  assert.ok(calls.includes('/repo/newdir'), 'предок проверен');
   broker.dispose();
-});
-
-test('реальная битая symlink через createNodePathProbe — обязательный ask', async () => {
-  const { mkdtemp, symlink, realpath } = await import('node:fs/promises');
-  const os = await import('node:os');
-  const path = await import('node:path');
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'dsh-probe-')));
-  await symlink(path.join(root, 'missing-target.ts'), path.join(root, 'broken-link'), 'file');
-
-  const { broker } = makeBroker({
-    policy: 'auto',
-    ui: { ask: () => Promise.resolve('deny') },
-    probePath: createNodePathProbe()
-  });
-  assert.equal(
-    await broker.request(
-      writeRequest({ id: 'real-broken', targetPath: path.join(root, 'broken-link') })
-    ),
-    'deny'
-  );
-  broker.dispose();
-});
-
-test('probe ok внутри/снаружи: внутри allow, symlink наружу — ask', async () => {
-  const inside = makeBroker({
-    policy: 'auto',
-    probePath: async (absolutePath) => ({ status: 'ok', realPath: absolutePath })
-  });
-  assert.equal(
-    await inside.broker.request(writeRequest({ id: 'inside-probe', targetPath: `${ROOT}/a.ts` })),
-    'allow'
-  );
-  inside.broker.dispose();
-
-  const outside = makeBroker({
-    policy: 'auto',
-    ui: { ask: () => Promise.resolve('deny') },
-    probePath: async (absolutePath) =>
-      absolutePath.endsWith('/repo/link/file.ts')
-        ? { status: 'ok', realPath: '/outside/file.ts' }
-        : { status: 'ok', realPath: absolutePath }
-  });
-  assert.equal(
-    await outside.broker.request(writeRequest({ id: 'outside-probe', targetPath: '/repo/link/file.ts' })),
-    'deny'
-  );
-  outside.broker.dispose();
 });

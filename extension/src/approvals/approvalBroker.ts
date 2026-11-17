@@ -198,12 +198,23 @@ export class ApprovalBroker {
 
     const probe = async (candidate: string): Promise<PathProbe> => {
       if (this.#options.probePath !== undefined) {
-        return this.#options.probePath(candidate);
+        try {
+          return await this.#options.probePath(candidate);
+        } catch (error) {
+          return {
+            status: 'blocked',
+            reason: error instanceof Error ? error.message : String(error)
+          };
+        }
       }
       if (this.#options.resolveRealPath !== undefined) {
         try {
           const resolved = await this.#options.resolveRealPath(candidate);
-          return resolved === null ? { status: 'missing' } : { status: 'ok', realPath: resolved };
+          // Легаси-контракт не отличает отсутствие от битой ссылки: null —
+          // fail-closed, а не «missing» (иначе граница обходится).
+          return resolved === null
+            ? { status: 'blocked', reason: 'realpath вернул null' }
+            : { status: 'ok', realPath: resolved };
         } catch (error) {
           return {
             status: 'blocked',
