@@ -46,6 +46,13 @@
           "name": "Context",
           "type": "tree",
           "contextualTitle": "DSH"
+        },
+        {
+          "id": "dsh.kanban",
+          "name": "Kanban",
+          "type": "tree",
+          "contextualTitle": "DSH",
+          "when": "config.dsh.kanban.enabled"
         }
       ]
     },
@@ -146,6 +153,16 @@
         "command": "dsh.choosePrimaryWorkspace",
         "title": "Choose Primary Workspace",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.kanban.refresh",
+        "title": "Refresh Kanban",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.kanban.openCard",
+        "title": "Open Kanban Card",
+        "category": "DSH"
       }
     ],
     "configuration": {
@@ -231,7 +248,7 @@
         },
         "dsh.kanban.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Показывать доску задач проекта."
         },
         "dsh.telemetry.enabled": {
