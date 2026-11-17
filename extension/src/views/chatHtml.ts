@@ -28,6 +28,20 @@ export interface ChatPanelStateDto {
   readonly locale: 'ru' | 'en';
 }
 
+/** Решение пользователя по approval-запросу. */
+export type ApprovalDecisionDto = 'allow' | 'allow-session' | 'deny';
+
+/** Запрос подтверждения инструмента для инлайн-карточки. */
+export interface ApprovalRequestMessage {
+  readonly id: string;
+  readonly tool: string;
+  readonly kind: 'read' | 'write' | 'execute' | 'network';
+  readonly targetPath?: string | undefined;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly sessionId: string;
+  readonly createdAt: string;
+}
+
 /** Запись ленты в порядке поступления (#024). */
 export type FeedRecordDto =
   | { readonly kind: 'message'; readonly message: ChatMessageDto }
@@ -53,6 +67,8 @@ export type WebviewMessage =
   | { readonly kind: 'ready' }
   | { readonly kind: 'stop' }
   | { readonly kind: 'sendMessage'; readonly text: string }
+  | { readonly kind: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionDto }
+  | { readonly kind: 'approvalShowDiff'; readonly id: string }
   | { readonly kind: 'draftChanged'; readonly text: string }
   | { readonly kind: 'openNewSession' }
   | { readonly kind: 'retryChat' };
@@ -62,6 +78,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'ready',
   'sendMessage',
   'stop',
+  'approvalResolve',
+  'approvalShowDiff',
   'draftChanged',
   'openNewSession',
   'retryChat'
@@ -97,6 +115,8 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatToolResult',
   'chatDone',
   'chatCancelled',
+  'approvalRequest',
+  'approvalResolved',
   'chatSession',
   'composerDraft',
   'replaceFeed'
@@ -114,6 +134,8 @@ export type ExtensionMessage =
   | { readonly type: 'chatToolResult'; readonly result: ChatToolResultDto }
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
+  | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
   | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
@@ -138,6 +160,18 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   if (type === 'sendMessage') {
     const text = typeof record['text'] === 'string' ? record['text'].trim() : '';
     return text === '' ? null : { kind: 'sendMessage', text };
+  }
+  if (type === 'approvalResolve') {
+    const id = typeof record['id'] === 'string' ? record['id'] : '';
+    const decision = record['decision'];
+    if (id === '' || (decision !== 'allow' && decision !== 'allow-session' && decision !== 'deny')) {
+      return null;
+    }
+    return { kind: 'approvalResolve', id, decision };
+  }
+  if (type === 'approvalShowDiff') {
+    const id = typeof record['id'] === 'string' ? record['id'] : '';
+    return id === '' ? null : { kind: 'approvalShowDiff', id };
   }
   if (type === 'draftChanged') {
     const text = typeof record['text'] === 'string' ? record['text'] : '';
@@ -338,14 +372,18 @@ export class ChatSession {
     state: () => Omit<ChatPanelStateDto, 'status'>,
     emit: (message: ExtensionMessage) => void = () => undefined
   ): ExtensionMessage[] {
-    // Привязку к сессии обслуживает ChatController (#024), каркас не трогает.
+    // Подтверждения обслуживает ApprovalBroker (#009), привязку к сессии —
+    // ChatController (#024); каркас эти сообщения не трогает.
     if (
+      message.kind === 'approvalResolve' ||
+      message.kind === 'approvalShowDiff' ||
       message.kind === 'draftChanged' ||
       message.kind === 'openNewSession' ||
       message.kind === 'retryChat'
     ) {
       return [];
     }
+
     if (message.kind === 'ready') {
       const outgoing: ExtensionMessage[] = [
         { type: 'state', state: { ...state(), status: this.#status } }
