@@ -410,3 +410,46 @@ test('активация: рантайм #021 стартует из Extension Ho
   extension.deactivate();
   await rm(workspace, { recursive: true, force: true });
 });
+
+test('активация: форма восстанавливает последнюю выбранную модель из globalState', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.defaultModel': 'deepseek-chat', 'dsh.models': ['custom-model'] }
+  });
+  const extension = loadExtensionWithFakeVscode(fake);
+  const globalState = new Map([
+    ['dsh.newSession.last', { preset: 'standard', model: 'custom-model', sandbox: 'read-only', approval: 'never' }]
+  ]);
+  const context = {
+    subscriptions: [],
+    extensionUri: { path: '/ext', fsPath: '/ext', toString: () => 'file:///ext' },
+    globalState: {
+      get(key, fallback) {
+        return globalState.has(key) ? globalState.get(key) : fallback;
+      },
+      async update(key, value) {
+        globalState.set(key, value);
+      }
+    }
+  };
+  extension.activate(context);
+  resolveChatView(state);
+  extension.setSessionManager({
+    state: { workspaceId: 'ws', sessionId: null, title: null, status: 'idle', turnId: null, updatedAt: '' },
+    async create() {
+      return { sessionId: 'sess-1' };
+    },
+    on() {
+      return { dispose() {} };
+    },
+    async list() {
+      return [];
+    }
+  });
+
+  await state.commands.get('dsh.newSession')();
+  await tick();
+  const open = state.webviewMessages.find((message) => message.type === 'newSessionOpen');
+  assert.equal(open.form.values.model, 'custom-model');
+  assert.equal(open.form.values.sandbox, 'read-only');
+  assert.equal(open.form.values.approval, 'never');
+});

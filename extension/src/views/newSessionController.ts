@@ -108,7 +108,7 @@ export class NewSessionController {
         });
         this.#presets = presets;
         this.#models = models;
-        this.#values = { ...fallback, model: models[0] ?? fallback.model };
+        this.#values = { ...fallback, model: preferredModel(models, fallback.model) };
         this.#open = true;
         this.#ports.view.open({
           presets,
@@ -133,7 +133,7 @@ export class NewSessionController {
       };
       this.#presets = presets;
       this.#models = models;
-      this.#values = { ...values, model: models[0] ?? values.model };
+      this.#values = { ...values, model: preferredModel(models, values.model) };
       this.#open = true;
       this.#ports.view.open({
         presets,
@@ -227,4 +227,9 @@ export class NewSessionController {
     );
     return result as Promise<T>;
   }
+}
+
+/** Последняя выбранная модель, если она есть в списке; иначе первая. */
+function preferredModel(models: readonly string[], candidate: string): string {
+  return models.includes(candidate) ? candidate : (models[0] ?? candidate);
 }

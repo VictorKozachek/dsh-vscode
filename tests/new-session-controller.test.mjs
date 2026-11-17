@@ -309,3 +309,56 @@ test('cancel во время создания: сессия создаётся �
   assert.deepEqual(notified, ['sess-late'], 'о созданной сессии сообщили');
   void created;
 });
+
+test('open: последняя выбранная модель восстанавливается, если она в списке', async () => {
+  const { controller, calls } = harness({
+    models: ['deepseek-chat', 'custom-model'],
+    settings: { defaultModel: 'deepseek-chat' },
+    remembered: {
+      preset: 'worker',
+      model: 'custom-model',
+      sandbox: 'read-only',
+      approval: 'never'
+    }
+  });
+
+  await controller.open();
+  const form = calls.open[0];
+  assert.equal(form.values.model, 'custom-model');
+  assert.equal(form.values.preset, 'standard', 'пресет из памяти проверяется по списку');
+  assert.equal(form.values.sandbox, 'read-only');
+  assert.equal(form.values.approval, 'never');
+});
+
+test('open после ошибки получения моделей тоже предпочитает remembered model', async () => {
+  const controller = new NewSessionController({
+    getPresets: () => {
+      throw new Error('runtime down');
+    },
+    getModels: () => [],
+    create: async () => ({ sessionId: 'sess-1' }),
+    getSettings: () => ({ defaultModel: 'deepseek-chat' }),
+    getRemembered: () => ({ model: 'custom-model' }),
+    remember: () => undefined,
+    view: { open: () => undefined, update: () => undefined, close: () => undefined },
+    now: () => NOW
+  });
+  const opened = [];
+  // отдельный harness с view, чтобы прочитать форму
+  const controller2 = new NewSessionController({
+    getPresets: () => {
+      throw new Error('runtime down');
+    },
+    getModels: () => [],
+    create: async () => ({ sessionId: 'sess-1' }),
+    getSettings: () => ({ defaultModel: 'custom-model' }),
+    getRemembered: () => ({ model: 'custom-model' }),
+    remember: () => undefined,
+    view: { open: (form) => opened.push(form), update: () => undefined, close: () => undefined },
+    now: () => NOW
+  });
+  await controller.open();
+  await controller2.open();
+  assert.equal(opened[0].values.model, 'custom-model');
+  assert.match(opened[0].errors.form ?? '', /runtime down/);
+});
