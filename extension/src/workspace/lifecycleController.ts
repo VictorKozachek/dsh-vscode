@@ -11,6 +11,8 @@ import * as vscode from 'vscode';
 import type { AcpRuntimeOptions, RuntimeState } from '../runtime/acpRuntime';
 import type { DiffEditorPort } from '../diff/diffController';
 import type { ExtensionMessage } from '../views/chatHtml';
+import type { TerminalSession } from '../terminal/terminalBridge';
+import type { DiagnosticsReport } from '../diagnostics/collector';
 import { WorkspaceRegistry } from './registry';
 import { resolveWorkspace, type WorkspaceFolderInput } from './resolver';
 import { DshWorkspaceRuntime } from './dshRuntime';
@@ -43,6 +45,12 @@ export interface WorkspaceLifecycleHostOptions {
   readonly runtimeOptions?: Partial<AcpRuntimeOptions> | undefined;
   /** Состояние ACP-рантайма активного воркспейса (статус-бар #021). */
   readonly onRuntimeState?: ((state: RuntimeState) => void) | undefined;
+  /** Фабрика терминала (#015). */
+  readonly createTerminalSession?:
+    | ((input: { readonly cwd: string | undefined; readonly name: string }) => TerminalSession)
+    | undefined;
+  /** Сбор диагностики (#015). */
+  readonly collectDiagnostics?: (() => DiagnosticsReport) | undefined;
 }
 
 /** Disposable lifecycle + асинхронная остановка (ждёт мост). */
@@ -118,6 +126,12 @@ export function registerWorkspaceLifecycle(
         ...(options.onRuntimeState === undefined
           ? {}
           : { onStateChanged: options.onRuntimeState }),
+        ...(options.createTerminalSession === undefined
+          ? {}
+          : { createTerminalSession: options.createTerminalSession }),
+        ...(options.collectDiagnostics === undefined
+          ? {}
+          : { collectDiagnostics: options.collectDiagnostics }),
         // События неактивного воркспейса отбрасываются (#011).
         isActive: () => lifecycle?.acceptsEvent(folder.id) ?? false
       });

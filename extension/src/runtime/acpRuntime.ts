@@ -68,6 +68,16 @@ export interface RuntimeDiagnostics {
 }
 
 /** Настройки рантайма. */
+/** Handle ACP terminal client: вывод по мере выполнения + kill/release. */
+export interface TerminalClientHandle {
+  readonly status: string;
+  output(): { readonly text: string; readonly truncated: boolean };
+  waitForExit(): Promise<number | undefined>;
+  kill(): void;
+  release(): void;
+  readonly error?: string | undefined;
+}
+
 export interface AcpRuntimeOptions {
   /** cwd воркспейса и `cwd` для ACP-сессий. */
   readonly workspacePath: string;
@@ -101,6 +111,19 @@ export interface AcpRuntimeOptions {
    * Ответ на ACP `session/request_permission`. По умолчанию — `cancelled`
    * (безопасный отказ); #011 сможет подключить сюда ApprovalBroker.
    */
+  /**
+   * ACP terminal client (`terminal/create`): выполняет команду и отдаёт
+   * вывод/код возврата. Реальный ACP-агент использует именно эти методы.
+   */
+  readonly terminalClient?:
+    | ((input: {
+        readonly sessionId: string;
+        readonly command: string;
+        readonly cwd: string | undefined;
+        readonly env?: Readonly<Record<string, string>> | undefined;
+        readonly maxOutputBytes?: number | undefined;
+      }) => Promise<TerminalClientHandle>)
+    | undefined;
   readonly permissionHandler?:
     | ((request: {
         readonly sessionId: string;
@@ -144,6 +167,8 @@ export class AcpRuntime {
   #disposed = false;
   /** Активный ход на сессию: ACP не присылает turnId в session/update. */
   #activeTurns = new Map<string, string>();
+  #terminals = new Map<string, TerminalClientHandle>();
+  #terminalCounter = 0;
   /** Поколение запуска: stop() инвалидирует незавершённый discovery. */
   #startToken = 0;
 
@@ -478,7 +503,10 @@ export class AcpRuntime {
     try {
       const initialized = await peer.request(
         'initialize',
-        { protocolVersion: 1, clientCapabilities: {} },
+        {
+          protocolVersion: 1,
+          clientCapabilities: { terminal: true, fs: { readTextFile: false, writeTextFile: false } }
+        },
         { timeoutMs: this.#options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS }
       );
       const info = (initialized as { agentInfo?: { name?: string; version?: string } }).agentInfo;
@@ -560,6 +588,9 @@ export class AcpRuntime {
   }
 
   async #handleServerRequest(method: string, params: unknown): Promise<unknown> {
+    if (method.startsWith('terminal/')) {
+      return this.#handleTerminalRequest(method, (params ?? {}) as Record<string, unknown>);
+    }
     if (method !== 'session/request_permission') {
       throw new AcpError(`клиент не поддерживает метод ${method}`);
     }
@@ -586,6 +617,68 @@ export class AcpRuntime {
     return decision === 'cancelled'
       ? { outcome: { outcome: 'cancelled' } }
       : { outcome: { outcome: 'selected', optionId: decision.optionId } };
+  }
+
+  async #handleTerminalRequest(
+    method: string,
+    params: Record<string, unknown>
+  ): Promise<unknown> {
+    const terminalId = typeof params['terminalId'] === 'string' ? params['terminalId'] : '';
+    if (method === 'terminal/create') {
+      const client = this.#options.terminalClient;
+      if (client === undefined) {
+        throw new AcpError('терминал не подключён');
+      }
+      const command = typeof params['command'] === 'string' ? params['command'] : '';
+      const args = Array.isArray(params['args'])
+        ? params['args'].filter((item): item is string => typeof item === 'string')
+        : [];
+      const full = [command, ...args].join(' ').trim();
+      const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
+      const cwd = typeof params['cwd'] === 'string' ? params['cwd'] : undefined;
+      const env =
+        typeof params['env'] === 'object' && params['env'] !== null
+          ? (params['env'] as Record<string, string>)
+          : undefined;
+      const limit =
+        typeof params['outputByteLimit'] === 'number' ? params['outputByteLimit'] : undefined;
+      const handle = await client({
+        sessionId,
+        command: full,
+        cwd,
+        ...(env === undefined ? {} : { env }),
+        ...(limit === undefined ? {} : { maxOutputBytes: limit })
+      });
+      this.#terminalCounter += 1;
+      const id = `term-${String(this.#terminalCounter)}`;
+      this.#terminals.set(id, handle);
+      return { terminalId: id };
+    }
+    const terminal = this.#terminals.get(terminalId);
+    if (terminal === undefined) {
+      throw new AcpError(`терминал ${terminalId} не найден`);
+    }
+    switch (method) {
+      case 'terminal/output': {
+        const output = terminal.output();
+        return {
+          output: output.text,
+          truncated: output.truncated,
+          ...(terminal.error === undefined ? {} : { error: terminal.error })
+        };
+      }
+      case 'terminal/wait_for_exit':
+        return { exitCode: await terminal.waitForExit() };
+      case 'terminal/kill':
+        terminal.kill();
+        return {};
+      case 'terminal/release':
+        terminal.release();
+        this.#terminals.delete(terminalId);
+        return {};
+      default:
+        throw new AcpError(`клиент не поддерживает метод ${method}`);
+    }
   }
 
   #handleNotification(method: string, params: unknown): void {

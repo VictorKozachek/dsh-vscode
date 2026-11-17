@@ -398,6 +398,7 @@ test('активация: все команды каркаса зарегист�
     'dsh.openTaskBoard',
     'dsh.pruneWorkspaces',
     'dsh.reloadContext',
+    'dsh.reportDiagnostics',
     'dsh.resumeLastSession',
     'dsh.revertLastEdit',
     'dsh.sessions.create',

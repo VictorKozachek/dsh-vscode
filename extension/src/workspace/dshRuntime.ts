@@ -23,6 +23,8 @@ import { AuditLog } from '../approvals/auditLog';
 import { DiffController, type DiffEditorPort } from '../diff/diffController';
 import { DiffService, createNodeDiffFileSystem } from '../diff/diffService';
 import { ChatController, type ChatSessionsPort } from '../views/chatEvents';
+import { TerminalBridge, type TerminalSession } from '../terminal/terminalBridge';
+import { diagnosticsPayload, type DiagnosticsReport } from '../diagnostics/collector';
 import { SessionManager, type SessionSnapshot } from '../sessions/sessionManager';
 import { createRegistrySessionPersistence } from '../sessions/registryPersistence';
 import type { ExtensionMessage } from '../views/chatHtml';
@@ -59,18 +61,30 @@ export interface DshWorkspaceRuntimeOptions {
   readonly runtimeOptions?: Partial<AcpRuntimeOptions> | undefined;
   /** Состояние ACP-рантайма (статус-бар/версии #021). */
   readonly onStateChanged?: ((state: RuntimeState) => void) | undefined;
+  /** Фабрика терминала (в проде — VS Code shell integration). */
+  readonly createTerminalSession?:
+    | ((input: {
+        readonly cwd: string | undefined;
+        readonly name: string;
+        readonly env?: Readonly<Record<string, string>> | undefined;
+      }) => TerminalSession)
+    | undefined;
+  /** Сбор диагностики (в проде — vscode.languages); тесты подменяют. */
+  readonly collectDiagnostics?: (() => DiagnosticsReport) | undefined;
 }
 
 /** Рантайм воркспейса с компонентами для UI. */
 export class DshWorkspaceRuntime implements WorkspaceRuntime {
   readonly workspaceId: string;
   readonly workspacePath: string;
+  readonly #options: DshWorkspaceRuntimeOptions;
   readonly #bridge: AcpRuntime;
   readonly #sessions: SessionManager;
   readonly #loader: ContextLoader;
   readonly #chat: ChatController;
   readonly #approvals: ApprovalBroker;
   readonly #diff: DiffController | undefined;
+  readonly #terminal: TerminalBridge | undefined;
   readonly #log: (line: string) => void;
   readonly #isActive: () => boolean;
   #contextPack: unknown;
@@ -80,6 +94,7 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
 
   constructor(options: DshWorkspaceRuntimeOptions) {
     const { folder } = options;
+    this.#options = options;
     this.workspaceId = folder.id;
     this.workspacePath = folder.path;
     this.#log = options.log;
@@ -134,6 +149,18 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
         ? {}
         : { onStateChanged: options.onStateChanged }),
       // Обработчик permission: политика/аудит #009 и ответ ACP.
+      terminalClient: async ({ sessionId, command, cwd, env, maxOutputBytes }) => {
+        if (this.#terminal === undefined) {
+          throw new Error('терминал не подключён');
+        }
+        return this.#terminal.start({
+          sessionId,
+          command,
+          cwd,
+          ...(env === undefined ? {} : { env }),
+          ...(maxOutputBytes === undefined ? {} : { maxOutputBytes })
+        });
+      },
       permissionHandler: async ({ sessionId, tool, details }) => {
         const optionsList = Array.isArray(details) ? details : [];
         const firstOption = optionsList.find(
@@ -154,6 +181,31 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
         return 'cancelled';
       }
     });
+    if (options.createTerminalSession !== undefined) {
+      this.#terminal = new TerminalBridge({
+        createSession: (input) =>
+          options.createTerminalSession!({
+            cwd: input.cwd,
+            name: input.name,
+            ...(input.env === undefined ? {} : { env: input.env })
+          }),
+        approval: {
+          request: async (input) => {
+            const decision = await this.#approvals.request({
+              id: `terminal-${String(this.#approvalCounter++)}`,
+              tool: 'run_command',
+              kind: 'execute',
+              sessionId: input.sessionId,
+              ...(input.cwd === undefined ? {} : { targetPath: input.cwd }),
+              arguments: { command: input.command }
+            });
+            return decision;
+          }
+        },
+        log: options.log
+      });
+    }
+
     this.#sessions = new SessionManager({
       workspaceId: folder.id,
       bridge: this.#bridge,
@@ -238,6 +290,43 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     this.#log(
       `воркспейс ${this.workspaceId}: контекст загружен (${stats?.durationMs ?? 0} мс)`
     );
+  }
+
+  /** Терминал-мост (для инструментов агента). */
+  get terminal(): TerminalBridge | undefined {
+    return this.#terminal;
+  }
+
+  /**
+   * Передаёт диагностику агенту реальным ACP-механизмом: `session/prompt` с
+   * текстовым контекстом (отдельного diagnostics-метода в ACP нет).
+   */
+  async reportDiagnostics(): Promise<DiagnosticsReport> {
+    if (this.#options.collectDiagnostics === undefined) {
+      throw new Error('сбор диагностики не подключён');
+    }
+    const sessionId = this.#sessions.state.sessionId;
+    if (sessionId === null) {
+      throw new Error('нет активной сессии для передачи диагностики');
+    }
+    if (this.#sessions.state.turnId !== null) {
+      throw new Error('активный ход агента: диагностику можно отправить после завершения');
+    }
+    const report = this.#options.collectDiagnostics();
+    const payload = diagnosticsPayload(report);
+    const lines = payload.items
+      .slice(0, 50)
+      .map(
+        (item) =>
+          `${item.file}${item.line === undefined ? '' : `:${String(item.line)}`} [${item.severity}] ${item.message}`
+      );
+    const text = [
+      'Диагностика VS Code (контекст, не задача):',
+      `всего: ${String(payload.count)}${payload.truncated ? ', обрезано лимитом' : ''}`,
+      ...lines
+    ].join('\n');
+    await this.#bridge.request('turn.start', { sessionId, input: text });
+    return report;
   }
 
   /** Пересборка контекста без рестарта расширения (#013). */

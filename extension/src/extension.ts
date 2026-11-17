@@ -28,6 +28,8 @@ import {
 } from './views/contextInspectorView';
 import { buildContextInspector } from './views/contextInspector';
 import { registerKanban, type KanbanProvider } from './views/kanbanView';
+import { createVscodeTerminalSession } from './terminal/vscodeTerminal';
+import { collectWorkspaceDiagnostics } from './diagnostics/vscodeDiagnostics';
 import type { ContextPack } from './context/contextLoader';
 import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
 import type { ExtensionMessage } from './views/chatHtml';
@@ -51,6 +53,7 @@ export const COMMAND_IDS = {
   openTaskBoard: 'dsh.openTaskBoard',
   stopAgent: 'dsh.stopAgent',
   showContextInspector: 'dsh.showContextInspector',
+  reportDiagnostics: 'dsh.reportDiagnostics',
   resumeLastSession: 'dsh.resumeLastSession',
   openSettings: 'dsh.openSettings',
   choosePrimaryWorkspace: 'dsh.choosePrimaryWorkspace'
@@ -65,6 +68,7 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
   [COMMAND_IDS.openTaskBoard]: 'DSH: Open Task Board',
   [COMMAND_IDS.stopAgent]: 'DSH: Stop Agent',
   [COMMAND_IDS.showContextInspector]: 'DSH: Show Context Inspector',
+  [COMMAND_IDS.reportDiagnostics]: 'DSH: Report Diagnostics',
   [COMMAND_IDS.resumeLastSession]: 'DSH: Resume Last Session',
   [COMMAND_IDS.openSettings]: 'DSH: Open Settings',
   [COMMAND_IDS.choosePrimaryWorkspace]: 'DSH: Choose Primary Workspace'
@@ -369,6 +373,8 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (line) => {
       log.appendLine(line);
     },
+    createTerminalSession: createVscodeTerminalSession,
+    collectDiagnostics: () => collectWorkspaceDiagnostics(),
     onStatus: (state) => updateStatusBar(state),
     onRuntimeState: (state) => {
       updateStatusBarRuntime(state);
@@ -620,6 +626,25 @@ async function runCommand(command: CommandId): Promise<void> {
       await vscode.commands.executeCommand('dsh.kanban.focus');
     } catch {
       // view может быть недоступен в тестовом/скрытом окружении
+    }
+    return;
+  }
+  if (command === COMMAND_IDS.reportDiagnostics) {
+    if (activeRuntime === undefined) {
+      await vscode.window.showInformationMessage(
+        'DSH: Report Diagnostics — нет активного воркспейса.'
+      );
+      return;
+    }
+    try {
+      const report = await activeRuntime.reportDiagnostics();
+      await vscode.window.showInformationMessage(
+        `DSH: диагностика отправлена агенту (${String(report.total)} шт.).`
+      );
+    } catch (error) {
+      await vscode.window.showErrorMessage(
+        `DSH: не удалось отправить диагностику: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
     return;
   }

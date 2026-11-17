@@ -163,6 +163,11 @@
         "command": "dsh.kanban.openCard",
         "title": "Open Kanban Card",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.reportDiagnostics",
+        "title": "Report Diagnostics",
+        "category": "DSH"
       }
     ],
     "configuration": {
