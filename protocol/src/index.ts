@@ -88,7 +88,6 @@ export const DSH_METHODS = [
   'tools.invoke',
   'approval.resolve',
   'context.reload',
-  'diagnostics.report',
   'workspace.ping'
 ] as const;
 
@@ -218,23 +217,6 @@ export interface WorkspacePingResult {
 }
 
 /** Карта «метод → параметры и результат». */
-/** `diagnostics.report` (#015): диагностика VS Code как контекст агента. */
-export interface DiagnosticsReportParams {
-  readonly count: number;
-  readonly truncated: boolean;
-  readonly items: readonly {
-    readonly file: string;
-    readonly severity: string;
-    readonly message: string;
-    readonly line?: number;
-    readonly source?: string;
-  }[];
-}
-
-export interface DiagnosticsReportResult {
-  readonly accepted: boolean;
-}
-
 export interface DshMethods {
   'session.create': { params: SessionCreateParams; result: SessionCreateResult };
   'session.resume': { params: SessionResumeParams; result: SessionResumeResult };
@@ -244,10 +226,6 @@ export interface DshMethods {
   'tools.invoke': { params: ToolsInvokeParams; result: ToolsInvokeResult };
   'approval.resolve': { params: ApprovalResolveParams; result: ApprovalResolveResult };
   'context.reload': { params: ContextReloadParams; result: ContextReloadResult };
-  'diagnostics.report': {
-    params: DiagnosticsReportParams;
-    result: DiagnosticsReportResult;
-  };
   'workspace.ping': { params: WorkspacePingParams; result: WorkspacePingResult };
 }
 

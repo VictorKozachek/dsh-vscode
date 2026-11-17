@@ -78,16 +78,6 @@ export function toAcpCall(
         notification: true
       };
 
-    case 'diagnostics.report':
-      return {
-        method: 'diagnostics/report',
-        params: {
-          count: Number(params['count'] ?? 0),
-          truncated: params['truncated'] === true,
-          items: Array.isArray(params['items']) ? params['items'] : []
-        }
-      };
-
     case 'tools.invoke':
     case 'approval.resolve':
     case 'context.reload':

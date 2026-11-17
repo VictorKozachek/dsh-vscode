@@ -101,12 +101,21 @@ export interface AcpRuntimeOptions {
    * Ответ на ACP `session/request_permission`. По умолчанию — `cancelled`
    * (безопасный отказ); #011 сможет подключить сюда ApprovalBroker.
    */
-  /** Обработчик tool-запросов агента (run_command и т.п.). */
-  readonly toolHandler?:
-    | ((request: {
-        readonly method: string;
-        readonly params: Record<string, unknown>;
-      }) => Promise<unknown>)
+  /**
+   * ACP terminal client (`terminal/create`): выполняет команду и отдаёт
+   * вывод/код возврата. Реальный ACP-агент использует именно эти методы.
+   */
+  readonly terminalClient?:
+    | ((input: {
+        readonly sessionId: string;
+        readonly command: string;
+        readonly cwd: string | undefined;
+      }) => Promise<{
+        readonly output: string;
+        readonly exitCode: number | undefined;
+        readonly truncated?: boolean;
+        readonly error?: string | undefined;
+      }>)
     | undefined;
   readonly permissionHandler?:
     | ((request: {
@@ -151,6 +160,11 @@ export class AcpRuntime {
   #disposed = false;
   /** Активный ход на сессию: ACP не присылает turnId в session/update. */
   #activeTurns = new Map<string, string>();
+  #terminals = new Map<
+    string,
+    { output: string; exitCode: number | undefined; truncated: boolean; error?: string }
+  >();
+  #terminalCounter = 0;
   /** Поколение запуска: stop() инвалидирует незавершённый discovery. */
   #startToken = 0;
 
@@ -354,10 +368,6 @@ export class AcpRuntime {
           this.#workspacePath,
           now
         ) as unknown as DshMethodResult<M>;
-      case 'diagnostics.report':
-        return {
-          accepted: (result as { accepted?: unknown }).accepted === true
-        } as unknown as DshMethodResult<M>;
       default:
         throw new AcpError(`DSH-рантайм не поддерживает метод ${method}`);
     }
@@ -571,13 +581,10 @@ export class AcpRuntime {
   }
 
   async #handleServerRequest(method: string, params: unknown): Promise<unknown> {
+    if (method.startsWith('terminal/')) {
+      return this.#handleTerminalRequest(method, (params ?? {}) as Record<string, unknown>);
+    }
     if (method !== 'session/request_permission') {
-      if (this.#options.toolHandler !== undefined) {
-        return this.#options.toolHandler({
-          method,
-          params: (params ?? {}) as Record<string, unknown>
-        });
-      }
       throw new AcpError(`клиент не поддерживает метод ${method}`);
     }
     const record = (params ?? {}) as Record<string, unknown>;
@@ -603,6 +610,56 @@ export class AcpRuntime {
     return decision === 'cancelled'
       ? { outcome: { outcome: 'cancelled' } }
       : { outcome: { outcome: 'selected', optionId: decision.optionId } };
+  }
+
+  async #handleTerminalRequest(
+    method: string,
+    params: Record<string, unknown>
+  ): Promise<unknown> {
+    const terminalId = typeof params['terminalId'] === 'string' ? params['terminalId'] : '';
+    if (method === 'terminal/create') {
+      const client = this.#options.terminalClient;
+      if (client === undefined) {
+        throw new AcpError('терминал не подключён');
+      }
+      const command = typeof params['command'] === 'string' ? params['command'] : '';
+      const args = Array.isArray(params['args'])
+        ? params['args'].filter((item): item is string => typeof item === 'string')
+        : [];
+      const full = [command, ...args].join(' ').trim();
+      const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
+      const cwd = typeof params['cwd'] === 'string' ? params['cwd'] : undefined;
+      const result = await client({ sessionId, command: full, cwd });
+      this.#terminalCounter += 1;
+      const id = `term-${String(this.#terminalCounter)}`;
+      this.#terminals.set(id, {
+        output: result.output,
+        exitCode: result.exitCode,
+        truncated: result.truncated === true,
+        ...(result.error === undefined ? {} : { error: result.error })
+      });
+      return { terminalId: id };
+    }
+    const terminal = this.#terminals.get(terminalId);
+    if (terminal === undefined) {
+      throw new AcpError(`терминал ${terminalId} не найден`);
+    }
+    switch (method) {
+      case 'terminal/output':
+        return {
+          output: terminal.output,
+          truncated: terminal.truncated,
+          ...(terminal.error === undefined ? {} : { error: terminal.error })
+        };
+      case 'terminal/wait_for_exit':
+        return { exitCode: terminal.exitCode };
+      case 'terminal/kill':
+      case 'terminal/release':
+        this.#terminals.delete(terminalId);
+        return {};
+      default:
+        throw new AcpError(`клиент не поддерживает метод ${method}`);
+    }
   }
 
   #handleNotification(method: string, params: unknown): void {

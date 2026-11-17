@@ -145,18 +145,17 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
         ? {}
         : { onStateChanged: options.onStateChanged }),
       // Обработчик permission: политика/аудит #009 и ответ ACP.
-      toolHandler: async ({ method, params }) => {
-        if (method !== 'tools/invoke' || this.#terminal === undefined) {
-          throw new Error(`tool ${method} не поддерживается`);
+      terminalClient: async ({ sessionId, command, cwd }) => {
+        if (this.#terminal === undefined) {
+          throw new Error('терминал не подключён');
         }
-        const tool = typeof params['tool'] === 'string' ? params['tool'] : 'run_command';
-        if (tool !== 'run_command') {
-          throw new Error(`tool ${tool} не поддерживается`);
-        }
-        const command = typeof params['command'] === 'string' ? params['command'] : '';
-        const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
-        const cwd = typeof params['cwd'] === 'string' ? params['cwd'] : this.workspacePath;
-        return this.#terminal.run({ sessionId, command, cwd });
+        const result = await this.#terminal.run({ sessionId, command, cwd });
+        return {
+          output: result.output,
+          exitCode: result.exitCode,
+          truncated: result.truncated,
+          ...(result.error === undefined ? {} : { error: result.error })
+        };
       },
       permissionHandler: async ({ sessionId, tool, details }) => {
         const optionsList = Array.isArray(details) ? details : [];
@@ -289,13 +288,32 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     return this.#terminal;
   }
 
-  /** Отправляет диагностику агенту методом `diagnostics.report` (#015). */
+  /**
+   * Передаёт диагностику агенту реальным ACP-механизмом: `session/prompt` с
+   * текстовым контекстом (отдельного diagnostics-метода в ACP нет).
+   */
   async reportDiagnostics(): Promise<DiagnosticsReport> {
     if (this.#options.collectDiagnostics === undefined) {
       throw new Error('сбор диагностики не подключён');
     }
+    const sessionId = this.#sessions.state.sessionId;
+    if (sessionId === null) {
+      throw new Error('нет активной сессии для передачи диагностики');
+    }
     const report = this.#options.collectDiagnostics();
-    await this.#bridge.request('diagnostics.report', diagnosticsPayload(report));
+    const payload = diagnosticsPayload(report);
+    const lines = payload.items
+      .slice(0, 50)
+      .map(
+        (item) =>
+          `${item.file}${item.line === undefined ? '' : `:${String(item.line)}`} [${item.severity}] ${item.message}`
+      );
+    const text = [
+      'Диагностика VS Code (контекст, не задача):',
+      `всего: ${String(payload.count)}${payload.truncated ? ', обрезано лимитом' : ''}`,
+      ...lines
+    ].join('\n');
+    await this.#bridge.request('turn.start', { sessionId, input: text });
     return report;
   }
 

@@ -18,7 +18,6 @@ test('protocol: методы из §5.2 спецификации', () => {
   assert.deepEqual([...DSH_METHODS].sort(), [
     'approval.resolve',
     'context.reload',
-    'diagnostics.report',
     'session.create',
     'session.list',
     'session.resume',

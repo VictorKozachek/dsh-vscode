@@ -19,7 +19,7 @@ const logPath = process.env.FAKE_ACP_LOG;
 let nextSession = 1;
 let pendingPrompt;
 let pendingPermission;
-let pendingTool;
+const pendingRequests = new Map();
 const grandchildFile = process.env.FAKE_ACP_GRANDCHILD_PID_FILE;
 if (typeof grandchildFile === 'string' && grandchildFile !== '') {
   const grandchild = spawn(
@@ -64,24 +64,26 @@ lines.on('line', (line) => {
   const params = message.params ?? {};
   logMethod(method);
 
+  if (
+    message.id !== undefined &&
+    pendingRequests.has(message.id) &&
+    (message.result !== undefined || message.error !== undefined)
+  ) {
+    if (typeof logPath === 'string' && logPath !== '') {
+      appendFileSync(logPath, `response:${message.id}:${JSON.stringify(message.result ?? message.error)}\n`);
+    }
+    const resolve = pendingRequests.get(message.id);
+    pendingRequests.delete(message.id);
+    resolve?.(message.result ?? message.error);
+    return;
+  }
+
   if (message.id === 900 && (message.result !== undefined || message.error !== undefined)) {
     if (typeof logPath === 'string' && logPath !== '') {
       appendFileSync(logPath, `response:900:${JSON.stringify(message.result ?? message.error)}\n`);
     }
     const pending = pendingPermission;
     pendingPermission = undefined;
-    if (pending !== undefined) {
-      pending();
-    }
-    return;
-  }
-
-  if (message.id === 901 && (message.result !== undefined || message.error !== undefined)) {
-    if (typeof logPath === 'string' && logPath !== '') {
-      appendFileSync(logPath, `response:901:${JSON.stringify(message.result ?? message.error)}\n`);
-    }
-    const pending = pendingTool;
-    pendingTool = undefined;
     if (pending !== undefined) {
       pending();
     }
@@ -157,10 +159,20 @@ lines.on('line', (line) => {
       const finish = (stopReason) => {
         respond(message.id, { stopReason });
       };
+      const inputText =
+        Array.isArray(params.prompt) && typeof params.prompt[0]?.text === 'string'
+          ? params.prompt[0].text
+          : '';
       const emitUpdates = () => {
         notify('session/update', {
           sessionId,
-          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Привет, ' } }
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: process.env.FAKE_ACP_ECHO_PROMPT === '1' ? inputText : 'Привет, '
+            }
+          }
         });
         notify('session/update', {
           sessionId,
@@ -189,24 +201,34 @@ lines.on('line', (line) => {
       };
 
       const runUpdates = () => {
-        if (process.env.FAKE_ACP_TOOL === '1') {
-          pendingTool = () => {
+        if (process.env.FAKE_ACP_TERMINAL === '1') {
+          let requestId = 900;
+          const requestClient = (method, params) =>
+            new Promise((resolve) => {
+              requestId += 1;
+              pendingRequests.set(requestId, resolve);
+              process.stdout.write(
+                `${JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: requestId,
+                  method,
+                  params
+                })}\n`
+              );
+            });
+          void (async () => {
+            const created = await requestClient('terminal/create', {
+              sessionId,
+              command: 'echo',
+              args: ['hi'],
+              cwd: process.cwd()
+            });
+            const terminalId = created?.terminalId;
+            await requestClient('terminal/output', { terminalId });
+            await requestClient('terminal/wait_for_exit', { terminalId });
             emitUpdates();
             setTimeout(() => finish('end_turn'), 10);
-          };
-          process.stdout.write(
-            `${JSON.stringify({
-              jsonrpc: '2.0',
-              id: 901,
-              method: 'tools/invoke',
-              params: {
-                tool: 'run_command',
-                command: 'echo hi',
-                sessionId,
-                cwd: process.cwd()
-              }
-            })}\n`
-          );
+          })();
           return;
         }
         if (process.env.FAKE_ACP_PERMISSION === '1') {

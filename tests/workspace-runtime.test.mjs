@@ -205,9 +205,9 @@ test('ChatSessionsPort отдаёт model/preset в chatSession', async () => {
   }
 });
 
-test('агент вызывает run_command через ACP tools/invoke: вывод и код возврата', async () => {
+test('ACP terminal/*: агент получает вывод и код возврата; диагностика уходит session/prompt', async () => {
   const { readFile } = await import('node:fs/promises');
-  const logFile = path.join(tmpRoot, `tool-${String(Date.now())}.log`);
+  const logFile = path.join(tmpRoot, `terminal-${String(Date.now())}.log`);
   const registry = new WorkspaceRegistry({ registryDir: path.join(tmpRoot, 'registry-tool') });
   const folder = await makeFolder('tool');
   const calls = [];
@@ -238,7 +238,8 @@ test('агент вызывает run_command через ACP tools/invoke: вы�
       shutdownGraceMs: 500,
       env: {
         ...process.env,
-        FAKE_ACP_TOOL: '1',
+        FAKE_ACP_TERMINAL: '1',
+        FAKE_ACP_ECHO_PROMPT: '1',
         FAKE_ACP_LOG: logFile
       }
     }
@@ -247,10 +248,17 @@ test('агент вызывает run_command через ACP tools/invoke: вы�
   try {
     await runtime.sessions.create({ title: 'tool' });
     const sessionId = runtime.sessions.state.sessionId;
+    const tokens = [];
+    runtime.acpRuntime.on('token', (payload) => {
+      if (typeof payload.text === 'string') {
+        tokens.push(payload.text);
+      }
+    });
     await runtime.acpRuntime.request('turn.start', { sessionId, input: 'run' });
+
     const deadline = Date.now() + 5000;
     let text = '';
-    while (Date.now() < deadline && !text.includes('response:901')) {
+    while (Date.now() < deadline && !text.includes('response:903')) {
       try {
         text = await readFile(logFile, 'utf8');
       } catch {
@@ -258,12 +266,19 @@ test('агент вызывает run_command через ACP tools/invoke: вы�
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    assert.match(text, /response:901:.*"status":"ok"/s);
-    assert.match(text, /response:901:.*hi/s);
-    assert.deepEqual(calls, ['echo hi']);
+    assert.match(text, /response:901:.*"terminalId":"term-/s);
+    assert.match(text, /response:902:.*hi/s);
+    assert.match(text, /response:903:.*"exitCode":0/s);
+    assert.deepEqual(calls, ['echo hi'], 'команда выполнена через ACP terminal/create');
 
     const report = await runtime.reportDiagnostics();
     assert.equal(report.total, 1);
+    const echoDeadline = Date.now() + 5000;
+    while (Date.now() < echoDeadline && !tokens.join('').includes('Диагностика VS Code')) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.match(tokens.join(''), /Диагностика VS Code/);
+    assert.match(tokens.join(''), /src\/a\.ts:1 \[error\] boom/);
   } finally {
     await runtime.dispose();
     registry.dispose?.();
