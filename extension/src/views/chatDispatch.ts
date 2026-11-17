@@ -37,6 +37,11 @@ export interface ApprovalDispatchPort {
   showDiff(id: string): boolean;
 }
 
+/** Порт экрана настроек (#013). */
+export interface SettingsDispatchPort {
+  apply(values: Readonly<Record<string, unknown>>): Promise<void> | void;
+}
+
 /** Порт привязки чата к сессии (#024). */
 export interface ChatSessionDispatchPort {
   draftChanged(text: string): void;
@@ -58,6 +63,8 @@ export interface ChatDispatchOptions {
   readonly approvals?: ApprovalDispatchPort | undefined;
   /** Привязка чата к сессии (#024). */
   readonly chatSession?: ChatSessionDispatchPort | undefined;
+  /** Экран настроек dsh.* (#013). */
+  readonly settings?: SettingsDispatchPort | undefined;
 }
 
 /**
@@ -109,6 +116,10 @@ export async function dispatchWebviewMessage(
   }
   if (message.kind === 'retryChat') {
     options.chatSession?.retryChat();
+    return;
+  }
+  if (message.kind === 'settingsApply') {
+    await options.settings?.apply(message.values);
     return;
   }
 

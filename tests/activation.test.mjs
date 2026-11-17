@@ -47,8 +47,26 @@ function createFakeVscode({ settings = {} } = {}) {
       this.id = id;
     }
   }
+  class FakeEventEmitter {
+    constructor() {
+      this.listeners = new Set();
+      this.event = (listener) => {
+        this.listeners.add(listener);
+        return { dispose: () => this.listeners.delete(listener) };
+      };
+    }
+    fire(value) {
+      for (const listener of this.listeners) {
+        listener(value);
+      }
+    }
+    dispose() {
+      this.listeners.clear();
+    }
+  }
 
   const fake = {
+    EventEmitter: FakeEventEmitter,
     StatusBarAlignment: { Left: 1, Right: 2 },
     ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
     Uri: {
@@ -117,6 +135,11 @@ function createFakeVscode({ settings = {} } = {}) {
       },
       registerWebviewViewProvider(viewType, provider) {
         state.viewProviders.set(viewType, provider);
+        return { dispose() {} };
+      },
+      registerTreeDataProvider(viewId, provider) {
+        state.treeProviders ??= new Map();
+        state.treeProviders.set(viewId, provider);
         return { dispose() {} };
       },
       createTreeView(viewId, options) {
@@ -687,4 +710,51 @@ test('активация: форма восстанавливает послед
   assert.equal(open.form.values.model, 'custom-model');
   assert.equal(open.form.values.sandbox, 'read-only');
   assert.equal(open.form.values.approval, 'never');
+});
+
+test('инспектор контекста: реальные правила и Reload Context без рестарта', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dsh-context-'));
+  await writeFile(path.join(workspace, 'AGENTS.md'), '# Правила\nтест\n');
+  const { fake, state } = createFakeVscode({
+    settings: {
+      'dsh.executablePath': path.resolve('tests/fixtures/fake-acp-runtime.mjs'),
+      'dsh.profile': 'acp',
+      'dsh.workspace.graceMinutes': 0
+    }
+  });
+  state.workspaceFolders = [{ name: 'ctx', index: 0, uri: { fsPath: workspace } }];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({
+    subscriptions: [],
+    globalState: { get: () => undefined, update: async () => undefined }
+  });
+
+  const deadline = Date.now() + 8000;
+  while (
+    Date.now() < deadline &&
+    !state.output.some((line) => line.includes('рантайм подключён'))
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const provider = state.treeProviders?.get('dsh.context');
+  assert.ok(provider, 'вью инспектора зарегистрировано');
+  const roots = provider.getChildren();
+  const rulesGroup = roots.find((node) => node.label?.startsWith('Правила'));
+  assert.ok(rulesGroup, 'группа правил есть');
+  const rules = provider.getChildren(rulesGroup);
+  assert.ok(
+    rules.some((node) => node.label === 'AGENTS.md'),
+    'реальный источник правила AGENTS.md'
+  );
+
+  await state.commands.get('dsh.reloadContext')();
+  assert.ok(
+    state.messages.some((message) => /контекст перезагружен/.test(message)),
+    'Reload Context обновил пак'
+  );
+  await extension.deactivate();
+  await rm(workspace, { recursive: true, force: true });
 });

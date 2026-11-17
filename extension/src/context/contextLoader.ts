@@ -588,6 +588,13 @@ export class ContextLoader {
     return pack;
   }
 
+  /** Пересобирает пак без кэша (DSH: Reload Context). */
+  async reload(): Promise<ContextPack> {
+    this.#cachedPack = undefined;
+    this.#cachedFingerprint = undefined;
+    return this.load();
+  }
+
   /**
    * Следит за файлами воркспейса (правила, манифест, скилы) и пересобирает пак
    * с debounce. Возвращает функцию отписки.

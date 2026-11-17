@@ -104,7 +104,8 @@ export type WebviewMessage =
   | { readonly kind: 'approvalShowDiff'; readonly id: string }
   | { readonly kind: 'draftChanged'; readonly text: string }
   | { readonly kind: 'openNewSession' }
-  | { readonly kind: 'retryChat' };
+  | { readonly kind: 'retryChat' }
+  | { readonly kind: 'settingsApply'; readonly values: Readonly<Record<string, unknown>> };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
 export const WEBVIEW_MESSAGE_TYPES = [
@@ -117,7 +118,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'approvalShowDiff',
   'draftChanged',
   'openNewSession',
-  'retryChat'
+  'retryChat',
+  'settingsApply'
 ] as const;
 
 /** Статус потока ответа в панели. */
@@ -157,7 +159,8 @@ export const EXTENSION_MESSAGE_TYPES = [
   'approvalResolved',
   'chatSession',
   'composerDraft',
-  'replaceFeed'
+  'replaceFeed',
+  'settingsOpen'
 ] as const;
 
 /** Сообщения extension → WebView. */
@@ -179,7 +182,8 @@ export type ExtensionMessage =
   | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto }
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
-  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] }
+  | { readonly type: 'settingsOpen' };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
@@ -230,6 +234,13 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   }
   if (type === 'retryChat') {
     return { kind: 'retryChat' };
+  }
+  if (type === 'settingsApply') {
+    const values = record['values'];
+    if (typeof values !== 'object' || values === null || Array.isArray(values)) {
+      return null;
+    }
+    return { kind: 'settingsApply', values: values as Record<string, unknown> };
   }
   return null;
 }
@@ -454,7 +465,8 @@ export class ChatSession {
       message.kind === 'approvalShowDiff' ||
       message.kind === 'draftChanged' ||
       message.kind === 'openNewSession' ||
-      message.kind === 'retryChat'
+      message.kind === 'retryChat' ||
+      message.kind === 'settingsApply'
     ) {
       return [];
     }

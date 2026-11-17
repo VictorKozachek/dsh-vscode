@@ -22,6 +22,12 @@ import {
 } from './workspace/lifecycleController';
 import type { LifecycleState } from './workspace/lifecycle';
 import { VscodeDiffEditor } from './diff/diffEditor';
+import {
+  registerContextInspector,
+  type ContextInspectorProvider
+} from './views/contextInspectorView';
+import { buildContextInspector } from './views/contextInspector';
+import type { ContextPack } from './context/contextLoader';
 import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
 import type { ExtensionMessage } from './views/chatHtml';
 import {
@@ -68,6 +74,9 @@ let workspaceLifecycle: WorkspaceLifecycleHandle | undefined;
 let lastContextPack: unknown;
 let remoteWarningShown = false;
 let activeWorkspace: ResolvedWorkspace | null = null;
+let activeRuntime: DshWorkspaceRuntime | undefined;
+let contextInspector: ContextInspectorProvider | undefined;
+let chatViewProvider: ChatViewProvider | undefined;
 
 /**
  * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
@@ -291,6 +300,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
 
+  // Инспектор контекста (#013): реальные правила/скилы/конфликты.
+  contextInspector = registerContextInspector(context, {
+    log: (line) => log.appendLine(line)
+  });
+
   // Lifecycle воркспейса (#011): смена папки переключает контекст и сессии с
   // grace period; компоненты активного рантайма подключаются к панели/командам.
   const applyRuntimeHandle = (handle: { runtime: DshWorkspaceRuntime } | null): void => {
@@ -304,12 +318,16 @@ export function activate(context: vscode.ExtensionContext): void {
       // Ссылка на активный рантайм очищается, но сам AcpRuntime живёт в grace:
       // dispose делает lifecycle.
       dshRuntime = undefined;
+      activeRuntime = undefined;
+      contextInspector?.setPack(null);
       return;
     }
     const runtime = handle.runtime;
     // Статус/версии #021 — от активного lifecycle-рантайма; старый не
     // закрываем — его держит grace period lifecycle.
     dshRuntime = runtime.acpRuntime;
+    activeRuntime = runtime;
+    contextInspector?.setPack((runtime.contextPack ?? null) as ContextPack | null);
     updateStatusBarRuntime(runtime.acpRuntime.state);
     maybeWarnRemoteRuntime();
     chatView.setChat(runtime.chat);
@@ -529,7 +547,28 @@ function maybeWarnRemoteRuntime(): void {
 }
 
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.reloadContext) {
+    if (activeRuntime === undefined) {
+      await vscode.window.showInformationMessage(
+        'DSH: Reload Context — нет активного воркспейса.'
+      );
+      return;
+    }
+    await activeRuntime.reloadContext();
+    lastContextPack = activeRuntime.contextPack;
+    contextInspector?.setPack((activeRuntime.contextPack ?? null) as ContextPack | null);
+    const inspector = buildContextInspector(activeRuntime.contextPack as ContextPack);
+    await vscode.window.showInformationMessage(
+      `DSH: контекст перезагружен — ${String(inspector.stats.rules)} правил, ${String(inspector.stats.skills)} скилов, ${String(inspector.stats.files)} файлов.`
+    );
+    return;
+  }
   if (command === COMMAND_IDS.showContextInspector) {
+    try {
+      await vscode.commands.executeCommand('dsh.context.focus');
+    } catch {
+      // view может быть скрыт/недоступен — сообщение ниже всё равно покажем
+    }
     const pack = lastContextPack as
       | {
           files?: readonly unknown[];
@@ -568,6 +607,7 @@ async function runCommand(command: CommandId): Promise<void> {
   }
   if (command === COMMAND_IDS.openSettings) {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'dsh');
+    void chatViewProvider?.postMessage({ type: 'settingsOpen' });
     return;
   }
   await vscode.window.showInformationMessage(
