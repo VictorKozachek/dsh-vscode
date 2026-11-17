@@ -57,6 +57,12 @@
 | 022 | Sessions view: список сессий | 007, 021 | `extension/src/views/sessions*` |
 | 023 | New Session: пресет, модель, sandbox, approval | 007, 021 | `extension/src/views/newSession*`, `webview/src/newSession/` |
 | 024 | Чат, привязанный к выбранной сессии | 008, 022 | `extension/src/views/chat*`, `webview/src/chat/` |
+| 025 | Sessions parity: сессии воркспейса (list + resume) | 021, 022 | `extension/src/sessions/*`, `extension/src/views/sessions*` |
+| 026 | UI списка сессий как в приложении | 022, 025 | `webview/src/sessions/`, `extension/src/views/sessions*` |
+| 027 | Fix: привязка активной сессии к чату | 022, 024 | `extension/src/views/chat*`, `sessions*`, `newSession*` |
+| 028 | Автономный рантайм (bundled/download) | 021 | `extension/src/runtime/*`, `extension/package.json` |
+| 029 | Онбординг: детект DSH и выбор рантайма | 021, 028 | `extension/src/onboarding/` |
+| 030 | Синхронизация воркспейса и индикатор | 025, 029 | `extension/src/workspace/sync*` |
 
 ## Критерии готовности задачи (Definition of Done)
 
@@ -82,6 +88,7 @@
 | 2026-11-09 | #008 потоковый чат слита (headless Chrome-проверка), `main` зелёный; #007 SessionManager на тестах; backlog #009–#020 |
 | 2026-11-09 | #007 SessionManager слита; вечерняя смена закрыта: слито 8 задач, очередь пуста и заморожена, `main` зелёный |
 | 2026-11-17 | #009 Approvals и #010 DiffService слиты (слияние #009 чистое — конфликт с #024 разошёлся сам), `main` зелёный |
+| 2026-11-17 | Спека §16: установка/онбординг/синхронизация с приложением; заведены #025–#030 (сессии, UI, фикс, рантайм, онбординг, sync-индикатор) |
 | 2026-11-17 | #015 терминал/диагностика слита; собран VSIX dev7 (не установлен — approval отменён); #016 субагенты в работе |
 | 2026-11-17 | #014 kanban-панель слита; VSIX dev6 установлен; #015 терминал/диагностика в работе |
 | 2026-11-17 | #013 инспектор контекста слита; VSIX dev5 установлен; #014 kanban-панель в работе |
