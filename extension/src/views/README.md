@@ -117,8 +117,14 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
 контроллера к реальному `DshBridge` и `SessionManager` — #011.
 
 Контракт сообщений расширен в `chatHtml.ts` (`chatStatus`, `chatToken`,
-`chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`); паритет с
-`webview/src/messages.ts` проверяет `tests/chat-view.test.mjs`.
+`chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`, а с #009 —
+`approvalRequest`/`approvalResolved`, с #024 — `chatSession`/`composerDraft`/
+`replaceFeed`); паритет с `webview/src/messages.ts` проверяет
+`tests/chat-view.test.mjs`.
+
+Инлайн-подтверждения (#009): диспетчер маршрутизирует `approvalResolve` и
+`approvalShowDiff` в порт `approvals` (брокер), не отдавая их каркасу; запросы
+показываются в панели как `approvalRequest`, а решения уходят в брокер.
 
 ## Панель Sessions (#022)
 

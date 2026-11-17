@@ -116,6 +116,10 @@ export interface SessionCreateParams {
   readonly workspaceId: string;
   readonly model?: string;
   readonly title?: string;
+  /** Поля #023/#021: пресет и политики, которые доходят до ACP-рантайма. */
+  readonly preset?: string;
+  readonly sandbox?: string;
+  readonly approval?: string;
 }
 
 export interface SessionCreateResult {
@@ -317,3 +321,7 @@ export function isDshMethod(value: string): value is DshMethod {
 export function isDshEvent(value: string): value is DshEvent {
   return (DSH_EVENTS as readonly string[]).includes(value);
 }
+
+// --- ACP-транспорт (#021) ---------------------------------------------------
+
+export * from './acp.js';

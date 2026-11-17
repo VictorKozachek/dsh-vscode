@@ -6,6 +6,8 @@ import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import type { DiffController } from './diff/diffController';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
+import { AcpRuntime } from './runtime/acpRuntime';
+import type { RuntimeState } from './runtime/acpRuntime';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -36,6 +38,17 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
 };
 
 let statusBarItem: vscode.StatusBarItem | undefined;
+
+/**
+ * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
+ * отдаётся #011 для проводки в lifecycle/SessionManager.
+ */
+let dshRuntime: AcpRuntime | undefined;
+
+/** Экземпляр рантайма для потребителей (#011) и тестов активации. */
+export function getDshRuntime(): AcpRuntime | undefined {
+  return dshRuntime;
+}
 
 /**
  * Менеджер сессий появляется после подключения моста DSH и воркспейса (#011).
@@ -159,6 +172,23 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  const folderPath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
+  if (typeof folderPath === 'string' && folderPath !== '') {
+    const configuration = vscode.workspace.getConfiguration('dsh');
+    dshRuntime = new AcpRuntime({
+      workspacePath: folderPath,
+      executablePath: configuration.get<string>('executablePath') ?? 'dsh',
+      profile: configuration.get<string>('profile') ?? 'acp',
+      homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
+      logger: (line) => {
+        log.appendLine(line);
+      },
+      onStateChanged: (state) => {
+        updateStatusBarRuntime(state);
+      }
+    });
+  }
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       updateStatusBar();
@@ -168,6 +198,8 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  void dshRuntime?.dispose();
+  dshRuntime = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
 }
@@ -196,6 +228,30 @@ function workspaceName(): string {
     return folder.name;
   }
   return vscode.workspace.name ?? 'no workspace';
+}
+
+/**
+ * Статус-бар из состояния DSH-рантайма (#021): после реального старта
+ * показывает версии dsh/ACP (критерий «версия … в статусе»).
+ */
+function updateStatusBarRuntime(state: RuntimeState): void {
+  if (statusBarItem === undefined) {
+    return;
+  }
+  if (state === 'running') {
+    const version = dshRuntime?.version ?? {};
+    const parts = ['ready'];
+    if (version.dsh !== undefined) {
+      parts.push(`dsh ${version.dsh}`);
+    }
+    if (version.acp !== undefined) {
+      parts.push(`ACP ${version.acp}`);
+    }
+    statusBarItem.text = `DSH · ${workspaceName()} · ${parts.join(' · ')}`;
+  } else {
+    statusBarItem.text = `DSH · ${workspaceName()} · ${state}`;
+  }
+  statusBarItem.show();
 }
 
 function updateStatusBar(): void {
