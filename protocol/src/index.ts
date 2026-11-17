@@ -105,7 +105,9 @@ export interface DshSessionSummary {
   readonly id: string;
   readonly workspaceId: string;
   readonly title?: string;
-  readonly status?: 'active' | 'paused';
+  readonly status?: 'active' | 'paused' | 'error';
+  readonly model?: string;
+  readonly preset?: string;
   readonly updatedAt: string;
 }
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import * as vscode from 'vscode';
 import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
+import { notifySessionsManagerChanged, registerSessionsView } from './views/sessionsView';
 import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import { NewSessionController } from './views/newSessionController';
@@ -68,6 +69,8 @@ let sessionManager: SessionManager | null = null;
 /** Подключить менеджер сессий (вызывает #011 после старта моста). */
 export function setSessionManager(manager: SessionManager | null): void {
   sessionManager = manager;
+  // Панель Sessions подписывается на события только что появившегося менеджера.
+  notifySessionsManagerChanged();
 }
 
 /** Контроллер формы New Session (#023); создаётся вместе с панелью. */
@@ -267,6 +270,16 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
+
+  // Панель Sessions (#022): список сессий воркспейса поверх SessionManager.
+  context.subscriptions.push(
+    registerSessionsView(context, {
+      getManager: () => sessionManager,
+      log: (line) => {
+        log.appendLine(line);
+      }
+    })
+  );
 
   const folderPath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
   if (typeof folderPath === 'string' && folderPath !== '') {
