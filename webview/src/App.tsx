@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
+import { ApprovalCard } from './approvals/ApprovalCard';
+import type { ApprovalDecisionKind } from './approvals/approvalModel';
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
 import { DraftStore, switchSessionDraft } from './chat/drafts';
 import { Composer } from './components/Composer';
@@ -9,6 +11,7 @@ import { MessageList } from './components/MessageList';
 import { PanelStatus } from './components/PanelStatus';
 import { createTranslator, resolveLocale } from './i18n';
 import type {
+  ApprovalRequestMessage,
   ChatPanelState,
   ChatPanelStatus,
   ChatSessionDto,
@@ -31,6 +34,7 @@ export function App(): ReactElement {
   const [panel, setPanel] = useState<ChatPanelState | null>(null);
   const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
+  const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
   const activeSessionRef = useRef<string | null>(null);
@@ -108,6 +112,18 @@ export function App(): ReactElement {
         }
         case 'chatCancelled': {
           dispatch({ type: 'cancelled' });
+          break;
+        }
+        case 'approvalRequest': {
+          setApprovals((previous) =>
+            previous.some((item) => item.id === message.request.id)
+              ? previous
+              : [...previous, message.request]
+          );
+          break;
+        }
+        case 'approvalResolved': {
+          setApprovals((previous) => previous.filter((item) => item.id !== message.id));
           break;
         }
         case 'replaceFeed': {
@@ -189,6 +205,15 @@ export function App(): ReactElement {
     postToExtension({ type: 'stop' });
   }, []);
 
+  const resolveApproval = useCallback((id: string, decision: ApprovalDecisionKind) => {
+    setApprovals((previous) => previous.filter((item) => item.id !== id));
+    postToExtension({ type: 'approvalResolve', id, decision });
+  }, []);
+
+  const showApprovalDiff = useCallback((id: string) => {
+    postToExtension({ type: 'approvalShowDiff', id });
+  }, []);
+
   const changeDraft = useCallback(
     (value: string) => {
       draftRef.current = value;
@@ -244,6 +269,15 @@ export function App(): ReactElement {
         <p className="dsh-chat-note">{t('chat.historyUnavailable')}</p>
       ) : null}
       <MessageList t={t} entries={feed.entries} />
+      {approvals.map((request) => (
+        <ApprovalCard
+          key={request.id}
+          t={t}
+          request={request}
+          onDecision={resolveApproval}
+          onShowDiff={showApprovalDiff}
+        />
+      ))}
       <Composer
         t={t}
         value={draft}
