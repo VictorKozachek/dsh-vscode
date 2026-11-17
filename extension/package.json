@@ -217,6 +217,12 @@
           "minimum": 1,
           "description": "Сколько дней хранить запись реестра, которую не открывали (GC — команда «DSH: Prune Workspaces»)."
         },
+        "dsh.workspace.graceMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "description": "Сколько минут держать процесс DSH старого воркспейса после смены папки (быстрый возврат не перезапускает его)."
+        },
         "dsh.kanban.enabled": {
           "type": "boolean",
           "default": false,

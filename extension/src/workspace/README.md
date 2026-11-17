@@ -102,3 +102,27 @@ remote. Понимает кавычки и комментарии. INI разб�
 - Реестр (`~/.dsh/workspaces/<id>.json`) и жизненный цикл воркспейса — задачи
   #003 и #011; здесь только идентичность.
 - Манифест `.dsh/workspace.json` — задача #006 (`ContextLoader`).
+
+## Lifecycle смены папки (#011)
+
+`lifecycle.ts` — машина состояний `resolving → loading-context → ready →
+paused → teardown` и grace period:
+
+- `activate(folder)` — создаёт рантайм (мост DSH, менеджер сессий, загрузчик
+  контекста), грузит контекст #006 и восстанавливает последнюю сессию #007;
+- при переключении A→B сессия A ставится на паузу и остаётся живой
+  `dsh.workspace.graceMinutes` минут (по умолчанию 10); возврат в A в этом окне
+  — `resume()` без перезапуска процесса, по истечении — `dispose()` и GC;
+- `handleWorkspaceFolders(folders)` — debounce событий смены папок, пустой
+  список деактивирует воркспейс;
+- `acceptsEvent(workspaceId)` — события старого воркспейса отбрасываются по id;
+- публичные операции сериализуются, поэтому быстрые A→B→A не создают гонок;
+- `graceMsFromMinutes(value)` — разбор настройки (мусор → 10 минут).
+
+`lifecycleController.ts` — VS Code-обвязка: `onDidChangeWorkspaceFolders`,
+резолв #002, реальные рантаймы, статус-бар; подключается в `activate()`.
+
+Тесты — `tests/workspace-lifecycle.test.mjs` (fake timers): A→B→A, teardown по
+таймеру, возврат в пределах grace, debounce, пустой список, отбрасывание
+событий старого воркспейса, ошибка создания рантайма, `teardownAll`, состояние
+и настройка grace.
