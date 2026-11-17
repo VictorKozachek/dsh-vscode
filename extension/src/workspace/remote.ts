@@ -8,7 +8,7 @@
  */
 
 /** Удалённый хост VS Code. */
-export type RemoteKind = 'local' | 'ssh' | 'wsl' | 'containers' | 'other';
+export type RemoteKind = 'local' | 'ssh' | 'wsl' | 'containers' | 'codespaces' | 'other';
 
 /** Результат проверки рантайма на хосте. */
 export type RemoteRuntimeStatus =
@@ -35,8 +35,22 @@ export function remoteKind(remoteName: string | undefined): RemoteKind {
   if (value === '' || value === 'local') {
     return 'local';
   }
-  if (value === 'ssh' || value === 'wsl' || value === 'containers') {
-    return value;
+  if (value === 'ssh' || value === 'ssh-remote') {
+    return 'ssh';
+  }
+  if (value === 'wsl') {
+    return 'wsl';
+  }
+  if (
+    value === 'containers' ||
+    value === 'dev-container' ||
+    value === 'attached-container' ||
+    value === 'container'
+  ) {
+    return 'containers';
+  }
+  if (value === 'codespaces') {
+    return 'codespaces';
   }
   return 'other';
 }

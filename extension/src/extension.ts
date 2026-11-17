@@ -11,6 +11,8 @@ import {
   remoteKind,
   translateWorkspacePath
 } from './workspace/remote';
+import { resolveWorkspace, type ResolvedWorkspace } from './workspace/resolver';
+import { discoverRuntime } from './runtime/discovery';
 import { AcpRuntime } from './runtime/acpRuntime';
 import type { RuntimeState } from './runtime/acpRuntime';
 
@@ -46,6 +48,7 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let remoteWarningShown = false;
+let activeWorkspace: ResolvedWorkspace | null = null;
 
 /**
  * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
@@ -210,9 +213,13 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   }
 
+  void refreshWorkspaceIdentity();
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      // До перерезолва показываем имя из новых папок, не старое.
+      activeWorkspace = null;
       updateStatusBar();
+      void refreshWorkspaceIdentity();
       log.appendLine(`воркспейс сменился: ${workspaceName()}`);
     })
   );
@@ -254,7 +261,65 @@ export function primaryWorkspaceName(): string | undefined {
 }
 
 function workspaceName(): string {
-  return primaryWorkspaceName() ?? vscode.workspace.name ?? 'no workspace';
+  return (
+    activeWorkspace?.primary.name ??
+    primaryWorkspaceName() ??
+    vscode.workspace.name ??
+    'no workspace'
+  );
+}
+
+/**
+ * Перерезолвить воркспейс: primary из настройки, WSL-пути и remote-kind
+ * (#012). Используется активацией, сменой папок и командой выбора primary.
+ */
+async function refreshWorkspaceIdentity(): Promise<void> {
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const remoteName = vscode.env?.remoteName;
+  const folders = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+    uri: {
+      fsPath: translateWorkspacePath(folder.uri?.fsPath ?? '', {
+        remoteName,
+        platform: process.platform
+      })
+    },
+    name: folder.name,
+    index: folder.index
+  })).filter((folder) => folder.uri.fsPath !== '');
+  activeWorkspace = await resolveWorkspace(folders, {
+    remoteName,
+    ...(vscode.workspace.workspaceFile === undefined
+      ? {}
+      : { workspaceFile: vscode.workspace.workspaceFile.fsPath }),
+    primaryFolder: configuration.get<string>('primaryWorkspace')
+  });
+  if (activeWorkspace !== null) {
+    outputChannel?.appendLine(
+      `воркспейс ${activeWorkspace.id}: primary ${activeWorkspace.primary.name}` +
+        ` (${String(activeWorkspace.folders.length)} папок, remote ${activeWorkspace.remote})`
+    );
+  }
+  updateStatusBar();
+  await checkRemoteAvailability(remoteName);
+}
+
+/** Проверка наличия dsh на хосте: missing → инструкция, не падение. */
+async function checkRemoteAvailability(remoteName: string | undefined): Promise<void> {
+  const kind = remoteKind(remoteName);
+  if (kind === 'local' || remoteWarningShown) {
+    return;
+  }
+  const configuration = vscode.workspace.getConfiguration('dsh');
+  const discovery = await discoverRuntime({
+    homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
+    ...(configuration.get<string>('executablePath') === undefined
+      ? {}
+      : { executablePath: configuration.get<string>('executablePath') })
+  });
+  if (discovery.status === 'missing') {
+    remoteWarningShown = true;
+    await vscode.window.showWarningMessage(discovery.instructions);
+  }
 }
 
 /**
@@ -306,6 +371,7 @@ async function runCommand(command: CommandId): Promise<void> {
       await vscode.workspace
         .getConfiguration('dsh')
         .update('primaryWorkspace', picked, vscode.ConfigurationTarget.Workspace);
+      await refreshWorkspaceIdentity();
       updateStatusBar();
     }
     return;

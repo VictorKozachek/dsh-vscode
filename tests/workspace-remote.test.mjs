@@ -16,7 +16,10 @@ test('remoteKind: ssh/wsl/containers/локальный', () => {
   assert.equal(remoteKind('ssh'), 'ssh');
   assert.equal(remoteKind('WSL'), 'wsl');
   assert.equal(remoteKind('containers'), 'containers');
-  assert.equal(remoteKind('dev-container'), 'other');
+  assert.equal(remoteKind('ssh-remote'), 'ssh');
+  assert.equal(remoteKind('dev-container'), 'containers');
+  assert.equal(remoteKind('attached-container'), 'containers');
+  assert.equal(remoteKind('codespaces'), 'codespaces');
 });
 
 test('compareVersions: semver-подобное сравнение', () => {

@@ -376,3 +376,51 @@ test('multi-root: primary из настройки виден в статус-б�
   assert.equal(state.settings['dsh.primaryWorkspace'], 'first');
   assert.equal(state.statusBar.text, 'DSH · first · idle');
 });
+
+test('multi-root: primary из настройки доходит до resolveWorkspace (production path)', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const first = await mkdtemp(path.join(os.tmpdir(), 'dsh-primary-first-'));
+  const second = await mkdtemp(path.join(os.tmpdir(), 'dsh-primary-second-'));
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.primaryWorkspace': path.basename(second) }
+  });
+  state.workspaceFolders = [
+    { name: path.basename(first), index: 0, uri: { fsPath: first } },
+    { name: path.basename(second), index: 1, uri: { fsPath: second } }
+  ];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.equal(state.statusBar.text, `DSH · ${path.basename(second)} · idle`);
+  assert.ok(
+    state.output.some(
+      (line) => line.includes('primary') && line.includes(path.basename(second))
+    ),
+    'resolver выбрал primary из настройки'
+  );
+});
+
+test('remote: отсутствие dsh показывает инструкцию, расширение не падает', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.executablePath': '/nonexistent/dsh-binary-xyz' }
+  });
+  fake.env.remoteName = 'ssh-remote';
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const deadline = Date.now() + 3000;
+  while (
+    Date.now() < deadline &&
+    !state.messages.some((message) => /Установите: npm i -g @deepseek-ai\/dsh/.test(message))
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(
+    state.messages.some((message) => /Установите: npm i -g @deepseek-ai\/dsh/.test(message)),
+    'инструкция появилась'
+  );
+  assert.equal(state.errors.length, 0, 'расширение не падает');
+});
