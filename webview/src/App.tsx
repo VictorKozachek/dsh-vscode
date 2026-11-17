@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { ApprovalCard } from './approvals/ApprovalCard';
 import type { ApprovalDecisionKind } from './approvals/approvalModel';
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
+import { NewSessionModal } from './newSession/NewSessionModal';
 import { DraftStore, switchSessionDraft } from './chat/drafts';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
@@ -15,7 +16,9 @@ import type {
   ChatPanelState,
   ChatPanelStatus,
   ChatSessionDto,
-  ExtensionToWebview
+  ExtensionToWebview,
+  NewSessionFormDto,
+  NewSessionValuesDto
 } from './messages';
 import { onExtensionMessage, postToExtension } from './vscodeApi';
 
@@ -34,6 +37,7 @@ export function App(): ReactElement {
   const [panel, setPanel] = useState<ChatPanelState | null>(null);
   const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
+  const [newSession, setNewSession] = useState<NewSessionFormDto | null>(null);
   const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
@@ -112,6 +116,15 @@ export function App(): ReactElement {
         }
         case 'chatCancelled': {
           dispatch({ type: 'cancelled' });
+          break;
+        }
+        case 'newSessionOpen':
+        case 'newSessionUpdate': {
+          setNewSession(message.form);
+          break;
+        }
+        case 'newSessionClose': {
+          setNewSession(null);
           break;
         }
         case 'approvalRequest': {
@@ -205,6 +218,14 @@ export function App(): ReactElement {
     postToExtension({ type: 'stop' });
   }, []);
 
+  const submitNewSession = useCallback((values: NewSessionValuesDto) => {
+    postToExtension({ type: 'newSessionSubmit', values });
+  }, []);
+
+  const cancelNewSession = useCallback(() => {
+    postToExtension({ type: 'newSessionCancel' });
+  }, []);
+
   const resolveApproval = useCallback((id: string, decision: ApprovalDecisionKind) => {
     setApprovals((previous) => previous.filter((item) => item.id !== id));
     postToExtension({ type: 'approvalResolve', id, decision });
@@ -286,6 +307,14 @@ export function App(): ReactElement {
         disabled={session !== null && session.sessionId === null}
         onCreateSession={openNewSession}
       />
+      {newSession === null ? null : (
+        <NewSessionModal
+          t={t}
+          form={newSession}
+          onSubmit={submitNewSession}
+          onCancel={cancelNewSession}
+        />
+      )}
       <PanelStatus t={t} status={panelStatus} streamStatus={feed.status} error={feed.error} />
     </main>
   );
