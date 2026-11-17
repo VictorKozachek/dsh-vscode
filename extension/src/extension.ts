@@ -27,6 +27,7 @@ import {
   type ContextInspectorProvider
 } from './views/contextInspectorView';
 import { buildContextInspector } from './views/contextInspector';
+import { registerKanban, type KanbanProvider } from './views/kanbanView';
 import type { ContextPack } from './context/contextLoader';
 import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
 import type { ExtensionMessage } from './views/chatHtml';
@@ -77,6 +78,7 @@ let activeWorkspace: ResolvedWorkspace | null = null;
 let activeRuntime: DshWorkspaceRuntime | undefined;
 let contextInspector: ContextInspectorProvider | undefined;
 let chatViewProvider: ChatViewProvider | undefined;
+let kanbanProvider: KanbanProvider | undefined;
 
 /**
  * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
@@ -310,6 +312,11 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
   context.subscriptions.push({ dispose: () => chatView.dispose() });
+
+  // Kanban-панель (#014): read-only карточки из .kanban/tasks.
+  kanbanProvider = registerKanban(context, {
+    log: (line) => log.appendLine(line)
+  });
 
   // Инспектор контекста (#013): реальные правила/скилы/конфликты.
   contextInspector = registerContextInspector(context, {
@@ -607,6 +614,15 @@ function maybeWarnRemoteRuntime(): void {
 }
 
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.openTaskBoard) {
+    await kanbanProvider?.refresh();
+    try {
+      await vscode.commands.executeCommand('dsh.kanban.focus');
+    } catch {
+      // view может быть недоступен в тестовом/скрытом окружении
+    }
+    return;
+  }
   if (command === COMMAND_IDS.reloadContext) {
     if (activeRuntime === undefined) {
       await vscode.window.showInformationMessage(

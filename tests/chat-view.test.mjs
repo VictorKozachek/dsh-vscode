@@ -186,13 +186,16 @@ test('манифест: контейнер DSH в activity bar и view dsh.chat'
   const views = manifest.contributes.views.dsh;
   assert.deepEqual(
     views.map((view) => view.id).sort(),
-    ['dsh.chat', 'dsh.context', 'dsh.sessions'],
+    ['dsh.chat', 'dsh.context', 'dsh.kanban', 'dsh.sessions'],
     'в контейнере DSH чат, инспектор контекста (#013) и сессии (#022)'
   );
   const chat = views.find((view) => view.id === 'dsh.chat');
   assert.equal(chat.type, 'webview');
   const context = views.find((view) => view.id === 'dsh.context');
   assert.equal(context.type, 'tree');
+  const kanban = views.find((view) => view.id === 'dsh.kanban');
+  assert.equal(kanban.type, 'tree');
+  assert.equal(kanban.when, 'config.dsh.kanban.enabled');
   const sessions = views.find((view) => view.id === 'dsh.sessions');
   assert.equal(sessions.type, 'tree');
   assert.equal(sessions.name, 'Sessions');
