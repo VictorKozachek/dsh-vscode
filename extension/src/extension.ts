@@ -3,6 +3,7 @@ import { PROTOCOL_VERSION } from '@dsh-vscode/protocol';
 import { ChatViewProvider } from './views/chatViewProvider';
 import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
+import type { DiffController } from './diff/diffController';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
 import { registerWorkspaceLifecycle } from './workspace/lifecycleController';
 import type { LifecycleState } from './workspace/lifecycle';
@@ -46,6 +47,20 @@ let sessionManager: SessionManager | null = null;
 /** Подключить менеджер сессий (вызывает #011 после старта моста). */
 export function setSessionManager(manager: SessionManager | null): void {
   sessionManager = manager;
+}
+
+/** Команда отката последней правки DiffService (#010). */
+export const REVERT_LAST_EDIT_COMMAND = 'dsh.revertLastEdit';
+
+/**
+ * Контроллер правок появляется вместе с воркспейсом (#011). До этого команда
+ * отката честно сообщает, что откатывать нечего.
+ */
+let diffController: DiffController | null = null;
+
+/** Подключить контроллер правок (вызывает #011 после выбора воркспейса). */
+export function setDiffController(controller: DiffController | null): void {
+  diffController = controller;
 }
 
 /** Команды, которые обслуживает SessionManager (не заглушки). */
@@ -95,6 +110,18 @@ export function activate(context: vscode.ExtensionContext): void {
       notify: (message) => vscode.window.showInformationMessage(message)
     }
   });
+  context.subscriptions.push(
+    vscode.commands.registerCommand(REVERT_LAST_EDIT_COMMAND, async () => {
+      if (diffController === null) {
+        await vscode.window.showInformationMessage(
+          'DSH: Revert Last Edit — откатывать нечего (нет активного воркспейса).'
+        );
+        return;
+      }
+      await diffController.revertLastEdit();
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_IDS.newSession, () => sessionCommands.newSession()),
     vscode.commands.registerCommand(COMMAND_IDS.resumeLastSession, () =>

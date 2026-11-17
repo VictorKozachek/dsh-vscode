@@ -28,7 +28,9 @@ const expectedCommands = {
  * id → заголовок. Сейчас — GC реестра воркспейсов (#003).
  */
 const extraCommands = {
-  'dsh.pruneWorkspaces': 'DSH: Prune Workspaces'
+  'dsh.pruneWorkspaces': 'DSH: Prune Workspaces',
+  // #010: откат последней правки DiffService.
+  'dsh.revertLastEdit': 'DSH: Revert Last Edit'
 };
 
 /** Настройки из §9 спецификации: ключ → тип и значение по умолчанию. */
