@@ -12,11 +12,22 @@
  */
 
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 const logPath = process.env.FAKE_ACP_LOG;
 let nextSession = 1;
 let pendingPrompt;
+let pendingPermission;
+const grandchildFile = process.env.FAKE_ACP_GRANDCHILD_PID_FILE;
+if (typeof grandchildFile === 'string' && grandchildFile !== '') {
+  const grandchild = spawn(
+    process.execPath,
+    ['-e', 'setInterval(() => {}, 1000)'],
+    { stdio: 'ignore' }
+  );
+  writeFileSync(grandchildFile, String(grandchild.pid));
+}
 
 function logMethod(method) {
   if (typeof logPath === 'string' && logPath !== '') {
@@ -51,6 +62,18 @@ lines.on('line', (line) => {
   const method = typeof message.method === 'string' ? message.method : '';
   const params = message.params ?? {};
   logMethod(method);
+
+  if (message.id === 900 && (message.result !== undefined || message.error !== undefined)) {
+    if (typeof logPath === 'string' && logPath !== '') {
+      appendFileSync(logPath, `response:900:${JSON.stringify(message.result ?? message.error)}\n`);
+    }
+    const pending = pendingPermission;
+    pendingPermission = undefined;
+    if (pending !== undefined) {
+      pending();
+    }
+    return;
+  }
 
   switch (method) {
     case 'initialize':
@@ -132,13 +155,39 @@ lines.on('line', (line) => {
         });
       };
 
+      const runUpdates = () => {
+        if (process.env.FAKE_ACP_PERMISSION === '1') {
+          pendingPermission = () => {
+            emitUpdates();
+            setTimeout(() => finish('end_turn'), 10);
+          };
+          process.stdout.write(
+            `${JSON.stringify({
+              jsonrpc: '2.0',
+              id: 900,
+              method: 'session/request_permission',
+              params: {
+                sessionId,
+                toolCall: { toolCallId: 'call-perm', title: 'write_file' },
+                options: [
+                  { optionId: 'allow', name: 'Allow' },
+                  { optionId: 'deny', name: 'Deny' }
+                ]
+              }
+            })}\n`
+          );
+          return;
+        }
+        emitUpdates();
+        setTimeout(() => finish('end_turn'), 10);
+      };
+
       if (process.env.FAKE_ACP_HANG_PROMPT === '1') {
         pendingPrompt = { id: message.id, sessionId, emitUpdates, finish };
         emitUpdates();
         return;
       }
-      emitUpdates();
-      setTimeout(() => finish('end_turn'), 10);
+      runUpdates();
       return;
     }
 

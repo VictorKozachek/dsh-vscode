@@ -23,6 +23,12 @@ Gateway-envelope; фронтенд-специфичный слой (static dist,
 
 ### (b) `dsh --profile acp` — automation-only JSON-RPC stdio (принято)
 
+(В карточке (b) описано как ручной `profile-boot`; по итогам спайка выяснилось,
+что штатный `dsh --profile acp` — это и есть automation-only ACP-сервер, он
+проще и стабильнее ручного boot. Профиль по умолчанию в манифесте — `acp`
+(в тексте карточки упомянут `web`; `web` — это HTTP GUI, для расширения не
+нужен). Отклонение согласовано с оркестратором через карточку #021.
+
 ACP-профиль (`@deepseek-ai/dsh-acp`) — штатный automation-сервер: NDJSON
 JSON-RPC поверх stdio, методы `initialize`, `session/new`, `session/list`,
 `session/resume`, `session/close`, `session/prompt`, `session/cancel`,

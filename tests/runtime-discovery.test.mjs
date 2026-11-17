@@ -96,3 +96,23 @@ test('redactSecrets: токены и креденшелы не попадают 
     'https://example.com/repo?api_key=[redacted]'
   );
 });
+
+test('голое имя в dsh.executablePath ищется через PATH (дефолт «dsh»)', async () => {
+  const result = await discoverRuntime({
+    executablePath: 'dsh',
+    homeDirectory: HOME,
+    isFile: async () => false,
+    which: async (name) => (name === 'dsh' ? '/usr/local/bin/dsh' : null)
+  });
+  assert.equal(result.status, 'found');
+  assert.equal(result.command.source, 'setting');
+  assert.equal(result.command.command, '/usr/local/bin/dsh');
+
+  const missing = await discoverRuntime({
+    executablePath: 'dsh',
+    homeDirectory: HOME,
+    isFile: async () => false,
+    which: async () => null
+  });
+  assert.equal(missing.status, 'missing');
+});

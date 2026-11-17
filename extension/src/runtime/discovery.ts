@@ -91,6 +91,25 @@ export async function discoverRuntime(
 
   const explicit = options.executablePath?.trim();
   if (explicit !== undefined && explicit !== '') {
+    // Голое имя (`dsh`, дефолт настройки) ищем через PATH; путь — как файл.
+    const looksLikePath = explicit.includes('/') || explicit.includes('\\');
+    if (!looksLikePath) {
+      const fromSettingPath = await which(explicit);
+      if (fromSettingPath !== null) {
+        return found({
+          command: fromSettingPath,
+          args: ['--profile', profile],
+          source: 'setting',
+          displayPath: `${explicit} (${fromSettingPath})`
+        });
+      }
+      attempts.push(`dsh.executablePath: ${explicit} не найден в PATH`);
+      return {
+        status: 'missing',
+        instructions: `DSH runtime не найден по dsh.executablePath: ${explicit}.\n${RUNTIME_INSTALL_INSTRUCTIONS}`,
+        attempts
+      };
+    }
     if (await isFile(explicit)) {
       return found({
         command: explicit,

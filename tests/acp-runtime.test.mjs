@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { register } from 'node:module';
 import os from 'node:os';
@@ -178,4 +179,69 @@ test('ACPruntime: логи не содержат токенов', async () => {
   const text = lines.join('\n');
   assert.ok(!/token=[^&\s]+/.test(text), 'токен в логе');
   assert.ok(!/Bearer\s+[A-Za-z0-9.]+/.test(text), 'bearer в логе');
+});
+
+test('ACP permission: запрос агента обрабатывается, событие approval.request и ответ сanceled', async () => {
+  const logFile = path.join(tmpRoot, 'permission.log');
+  const { runtime } = await harness({ FAKE_ACP_PERMISSION: '1', FAKE_ACP_LOG: logFile });
+  await runtime.start();
+
+  const approvals = [];
+  const done = [];
+  runtime.on('approval.request', (payload) => approvals.push(payload));
+  runtime.on('turn.done', (payload) => done.push(payload));
+
+  await runtime.request('turn.start', { sessionId: 'sess-1', input: 'запиши файл' });
+  await waitFor(() => done.length === 1, { label: 'turn.done после permission' });
+  await waitFor(async () => {
+    try {
+      return (await readFile(logFile, 'utf8')).includes('response:900');
+    } catch {
+      return false;
+    }
+  }, { label: 'ответ на permission' });
+
+  assert.equal(approvals[0].tool, 'write_file');
+  assert.equal(approvals[0].sessionId, 'sess-1');
+  const log = await readFile(logFile, 'utf8');
+  assert.match(log, /response:900:.*cancelled/s);
+  await runtime.stop();
+});
+
+test('stop гасит дерево процессов (npx/grandchild)', async () => {
+  const pidFile = path.join(tmpRoot, 'grandchild.pid');
+  const { runtime } = await harness({ FAKE_ACP_GRANDCHILD_PID_FILE: pidFile });
+  await runtime.start();
+  await waitFor(() => existsSync(pidFile), { label: 'pid внука' });
+  const grandchildPid = Number((await readFile(pidFile, 'utf8')).trim());
+  assert.ok(Number.isFinite(grandchildPid));
+
+  await runtime.stop();
+  await waitFor(() => !isAlive(grandchildPid), { label: 'внук завершён' });
+});
+
+test('stop во время discovery отменяет запуск (нет orphan-процесса)', async () => {
+  let resolveWhich;
+  const runtime = new AcpRuntime({
+    workspacePath: tmpRoot,
+    executablePath: 'dsh',
+    homeDirectory: path.join(tmpRoot, 'home'),
+    logger: () => undefined,
+    discovery: {
+      allowNpxFallback: false,
+      which: () =>
+        new Promise((resolve) => {
+          resolveWhich = resolve;
+        })
+    }
+  });
+
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  await runtime.stop();
+  resolveWhich(FIXTURE);
+  await starting;
+
+  assert.equal(runtime.state, 'stopped');
+  assert.equal(runtime.processId, undefined);
 });

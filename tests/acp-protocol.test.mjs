@@ -146,3 +146,22 @@ test('session/update → токены и tool-события', () => {
   );
   assert.equal(mapAcpNotification('other/method', {}), null);
 });
+
+test('ACP-методы в protocol/ совпадают с маппингом рантайма', async () => {
+  const { ACP_METHODS } = await import('../protocol/src/acp.ts');
+
+  assert.equal(toAcpCall('session.list', {}, CWD).method, ACP_METHODS.sessionList);
+  assert.equal(toAcpCall('session.create', {}, CWD).method, ACP_METHODS.sessionNew);
+  assert.equal(
+    toAcpCall('session.resume', { sessionId: 's' }, CWD).method,
+    ACP_METHODS.sessionResume
+  );
+  assert.equal(toAcpCall('turn.start', { sessionId: 's', input: 'x' }, CWD).method, ACP_METHODS.sessionPrompt);
+  assert.equal(
+    toAcpCall('turn.cancel', { sessionId: 's', turnId: 't' }, CWD).method,
+    ACP_METHODS.sessionCancel
+  );
+  assert.equal(ACP_METHODS.initialize, 'initialize');
+  assert.equal(ACP_METHODS.sessionUpdate, 'session/update');
+  assert.equal(ACP_METHODS.requestPermission, 'session/request_permission');
+});

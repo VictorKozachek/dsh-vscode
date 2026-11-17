@@ -30,6 +30,8 @@ import type {
   DshMethodResult
 } from '@dsh-vscode/protocol';
 
+import type { DshBridgePort } from '../sessions/sessionManager';
+
 import { AcpPeer, AcpError } from './acpPeer';
 import {
   mapAcpNotification,
@@ -93,6 +95,17 @@ export interface AcpRuntimeOptions {
     'isFile' | 'which' | 'allowNpxFallback'
   > | undefined;
   readonly now?: (() => Date) | undefined;
+  /**
+   * Ответ на ACP `session/request_permission`. По умолчанию — `cancelled`
+   * (безопасный отказ); #011 сможет подключить сюда ApprovalBroker.
+   */
+  readonly permissionHandler?:
+    | ((request: {
+        readonly sessionId: string;
+        readonly tool: string;
+        readonly details: Record<string, unknown>;
+      }) => Promise<'cancelled' | { readonly optionId: string }>)
+    | undefined;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -125,6 +138,10 @@ export class AcpRuntime {
   #restartTimer: NodeJS.Timeout | undefined;
   #turnCounter = 0;
   #disposed = false;
+  /** Активный ход на сессию: ACP не присылает turnId в session/update. */
+  #activeTurns = new Map<string, string>();
+  /** Поколение запуска: stop() инвалидирует незавершённый discovery. */
+  #startToken = 0;
 
   constructor(options: AcpRuntimeOptions) {
     this.#options = options;
@@ -175,8 +192,14 @@ export class AcpRuntime {
     this.#attempts = 0;
     this.#instructions = undefined;
     this.#lastError = undefined;
+    const token = ++this.#startToken;
 
     const discovery = await this.#discover();
+    // stop()/dispose() могли прийти, пока шёл поиск бинаря.
+    if (token !== this.#startToken || this.#stopping || this.#disposed) {
+      this.#setState('stopped');
+      return;
+    }
     if (discovery.status === 'missing' || discovery.command === undefined) {
       this.#instructions = discovery.instructions;
       this.#lastError = discovery.instructions.split('\n')[0] ?? 'DSH runtime не найден';
@@ -194,6 +217,7 @@ export class AcpRuntime {
   /** Остановка: SIGTERM → SIGKILL, отмена рестартов. */
   async stop(): Promise<void> {
     this.#stopping = true;
+    this.#startToken += 1;
     if (this.#restartTimer !== undefined) {
       clearTimeout(this.#restartTimer);
       this.#restartTimer = undefined;
@@ -212,6 +236,22 @@ export class AcpRuntime {
       return;
     }
 
+    const killTree = (signal: NodeJS.Signals): void => {
+      try {
+        if (process.platform !== 'win32' && child.pid !== undefined) {
+          process.kill(-child.pid, signal);
+          return;
+        }
+      } catch {
+        // группы может не быть — падаем на direct child
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // процесс уже умер
+      }
+    };
+
     await new Promise<void>((resolve) => {
       let settled = false;
       const done = (): void => {
@@ -223,18 +263,15 @@ export class AcpRuntime {
       };
       child.once('exit', done);
       if (!child.killed) {
-        child.kill('SIGTERM');
+        killTree('SIGTERM');
       }
       const killTimer = setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // процесс уже умер
-        }
+        killTree('SIGKILL');
         done();
       }, this.#options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS);
     });
 
+    this.#activeTurns.clear();
     if (this.#state !== 'failed') {
       this.#setState('stopped');
     }
@@ -344,6 +381,7 @@ export class AcpRuntime {
     const sessionId = String(record['sessionId'] ?? '');
     this.#turnCounter += 1;
     const turnId = `turn-${String(this.#turnCounter)}`;
+    this.#activeTurns.set(sessionId, turnId);
     const peer = this.#peer;
     if (peer === undefined) {
       throw new AcpError('DSH-рантайм не готов');
@@ -363,6 +401,7 @@ export class AcpRuntime {
           if (this.#stopping) {
             return;
           }
+          this.#activeTurns.delete(sessionId);
           const outcome = mapPromptOutcome(sessionId, turnId, result);
           this.#emit('turn.done', outcome.payload);
         },
@@ -370,6 +409,7 @@ export class AcpRuntime {
           if (this.#stopping) {
             return;
           }
+          this.#activeTurns.delete(sessionId);
           const message = error instanceof Error ? error.message : String(error);
           this.#log(`ACP: ход ${turnId} завершился ошибкой: ${message}`);
           this.#emit('error', { message, sessionId });
@@ -404,7 +444,9 @@ export class AcpRuntime {
         cwd: this.#workspacePath,
         env: this.#options.env ?? process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
+        windowsHide: true,
+        // На POSIX — своя группа процессов: stop() гасит и внуков (npx и т.п.).
+        detached: process.platform !== 'win32'
       });
     } catch (error) {
       this.#fail(`не удалось запустить ${command.displayPath}: ${describeError(error)}`);
@@ -436,7 +478,8 @@ export class AcpRuntime {
       },
       onNotification: (method, params) => {
         this.#handleNotification(method, params);
-      }
+      },
+      onRequest: (method, params) => this.#handleServerRequest(method, params)
     });
     this.#peer = peer;
 
@@ -503,8 +546,46 @@ export class AcpRuntime {
     }, delay);
   }
 
+  async #handleServerRequest(method: string, params: unknown): Promise<unknown> {
+    if (method !== 'session/request_permission') {
+      throw new AcpError(`клиент не поддерживает метод ${method}`);
+    }
+    const record = (params ?? {}) as Record<string, unknown>;
+    const sessionId = typeof record['sessionId'] === 'string' ? record['sessionId'] : '';
+    const toolCall = (record['toolCall'] ?? {}) as Record<string, unknown>;
+    const tool =
+      typeof toolCall['title'] === 'string'
+        ? toolCall['title']
+        : typeof toolCall['toolCallId'] === 'string'
+          ? toolCall['toolCallId']
+          : 'tool';
+    const details = (record['options'] ?? {}) as Record<string, unknown>;
+    this.#emit('approval.request', {
+      sessionId,
+      approvalId: typeof toolCall['toolCallId'] === 'string' ? toolCall['toolCallId'] : 'permission',
+      tool,
+      details
+    });
+    if (this.#options.permissionHandler === undefined) {
+      return { outcome: { outcome: 'cancelled' } };
+    }
+    const decision = await this.#options.permissionHandler({ sessionId, tool, details });
+    return decision === 'cancelled'
+      ? { outcome: { outcome: 'cancelled' } }
+      : { outcome: { outcome: 'selected', optionId: decision.optionId } };
+  }
+
   #handleNotification(method: string, params: unknown): void {
     const mapped = mapAcpNotification(method, params);
+    if (mapped !== null && mapped.event === 'token') {
+      const sessionId = typeof mapped.payload['sessionId'] === 'string' ? mapped.payload['sessionId'] : '';
+      const activeTurn = this.#activeTurns.get(sessionId);
+      if (activeTurn !== undefined) {
+        // ACP session/update не несёт turnId — подставляем активный ход,
+        // иначе ChatController отбросит токены как «чужой ход».
+        mapped.payload['turnId'] = activeTurn;
+      }
+    }
     if (mapped === null) {
       if (method !== 'session/update') {
         this.#log(`ACP: уведомление ${method} не поддержано`);
@@ -612,3 +693,7 @@ function describeError(error: unknown): string {
 }
 
 export type { AcpSessionSummary };
+
+/** Статическая проверка: AcpRuntime полностью закрывает порт DshBridge. */
+export type AcpRuntimeIsBridgePort = AcpRuntime extends DshBridgePort ? true : never;
+export const acpRuntimeIsBridgePort: AcpRuntimeIsBridgePort = true;

@@ -36,6 +36,8 @@ export interface AcpPeerOptions {
   readonly requestTimeoutMs: number;
   readonly log: (message: string) => void;
   readonly onNotification: (method: string, params: unknown) => void;
+  /** Обработчик запросов от агента (например, `session/request_permission`). */
+  readonly onRequest?: ((method: string, params: unknown) => Promise<unknown>) | undefined;
 }
 
 /** JSON-RPC 2.0 поверх NDJSON. */
@@ -45,6 +47,7 @@ export class AcpPeer {
   readonly #requestTimeoutMs: number;
   readonly #log: (message: string) => void;
   readonly #onNotification: (method: string, params: unknown) => void;
+  readonly #onRequest: ((method: string, params: unknown) => Promise<unknown>) | undefined;
   readonly #pending = new Map<number, PendingRequest>();
   #nextId = 1;
   #closed = false;
@@ -54,6 +57,7 @@ export class AcpPeer {
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#log = options.log;
     this.#onNotification = options.onNotification;
+    this.#onRequest = options.onRequest;
     this.#lines = createInterface({ input: options.input, crlfDelay: Infinity });
     this.#lines.on('line', (line) => {
       this.#handleLine(line);
@@ -175,9 +179,17 @@ export class AcpPeer {
       return;
     }
 
-    // Запрос от сервера (агент → клиент): клиент поддерживает только
-    // уведомления и permission-запросы считает отказом.
+    // Запрос от сервера (агент → клиент): permission и т.п.
     if (id !== undefined) {
+      void this.#handleServerRequest(id, method, parsed['params']);
+      return;
+    }
+
+    this.#onNotification(method, parsed['params']);
+  }
+
+  async #handleServerRequest(id: number, method: string, params: unknown): Promise<void> {
+    if (this.#onRequest === undefined) {
       this.#write({
         jsonrpc: '2.0',
         id,
@@ -185,8 +197,19 @@ export class AcpPeer {
       });
       return;
     }
-
-    this.#onNotification(method, parsed['params']);
+    try {
+      const result = await this.#onRequest(method, params);
+      this.#write({ jsonrpc: '2.0', id, result });
+    } catch (error) {
+      this.#write({
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: -32603,
+          message: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
   }
 }
 

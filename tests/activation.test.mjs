@@ -25,7 +25,7 @@ function createFakeVscode({ settings = {} } = {}) {
     changeListeners: [],
     viewProviders: new Map(),
     settings,
-    workspaceFolders: [{ name: 'demo-project', index: 0 }]
+    workspaceFolders: [{ name: 'demo-project', index: 0, uri: { fsPath: '/demo-project' } }]
   };
 
   const fake = {
@@ -241,4 +241,20 @@ test('активация: DSH: Prune Workspaces чистит реестр по �
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('активация: рантайм #021 создаётся из настроек, без спавна при старте', () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.executablePath': 'dsh', 'dsh.profile': 'acp' }
+  });
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const runtime = extension.getDshRuntime();
+  assert.ok(runtime, 'рантайм создан');
+  assert.equal(runtime.state, 'stopped', 'без спавна при активации');
+  assert.equal(runtime.diagnostics.state, 'stopped');
+  assert.equal(state.errors.length, 0);
+  extension.deactivate();
+  assert.equal(extension.getDshRuntime(), undefined);
 });
