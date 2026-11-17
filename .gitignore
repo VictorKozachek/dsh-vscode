@@ -39,3 +39,7 @@ worktrees/
 
 # pnpm store (создаётся при установке в рабочей директории сессии)
 .pnpm-store/
+
+# Кэш npm (сборка VSIX) и служебное состояние dsh-remote/kanban
+.npm-cache/
+.kanban/.watcher-resume.json

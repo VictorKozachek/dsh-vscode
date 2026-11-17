@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
+import { register } from 'node:module';
 import test from 'node:test';
 
-import {
-  ChatController,
-  ChatControllerError,
-  TokenBatcher
-} from '../extension/src/views/chatEvents.ts';
+register('./helpers/ts-loader.mjs', import.meta.url);
+const { ChatController, ChatControllerError, TokenBatcher } = await import(
+  '../extension/src/views/chatEvents.ts'
+);
 
 /** Мост-заглушка: записывает вызовы и умеет эмитить события. */
 function createBridge({ handlers = {} } = {}) {

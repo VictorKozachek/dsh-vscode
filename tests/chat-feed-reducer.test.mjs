@@ -218,3 +218,27 @@ test('лента: после отмены tool-события игнорирую
   });
   assert.equal(lateResult, current, 'tool.result после отмены игнорируется');
 });
+
+test('replaceFeed восстанавливает порядок user → tool → result → assistant', () => {
+  const state = chatFeedReducer(initialChatFeedState, {
+    type: 'replaceFeed',
+    records: [
+      { kind: 'message', message: { id: 'u1', role: 'user', text: 'прочитай' } },
+      { kind: 'toolCall', callId: 'c1', name: 'read_file', arguments: { path: 'a.ts' } },
+      { kind: 'toolResult', callId: 'c1', ok: true, result: { bytes: 1 } },
+      { kind: 'message', message: { id: 'a1', role: 'assistant', text: 'готово' } }
+    ]
+  });
+
+  assert.deepEqual(
+    state.entries.map((entry) => [entry.role, entry.text, entry.toolCalls.length]),
+    [
+      ['user', 'прочитай', 0],
+      ['assistant', '', 1],
+      ['assistant', 'готово', 0]
+    ]
+  );
+  assert.equal(state.entries[1].toolCalls[0].status, 'done');
+  assert.deepEqual(state.entries[1].toolCalls[0].result, { bytes: 1 });
+  assert.equal(state.status, 'idle');
+});

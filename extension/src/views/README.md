@@ -118,9 +118,30 @@ activity bar ─▶ dsh.chat (WebView) ─▶ extension/dist/webview/index.html 
 
 Контракт сообщений расширен в `chatHtml.ts` (`chatStatus`, `chatToken`,
 `chatToolCall`, `chatToolResult`, `chatDone`, `chatCancelled`, а с #009 —
-`approvalRequest`/`approvalResolved`); паритет с `webview/src/messages.ts`
-проверяет `tests/chat-view.test.mjs`.
+`approvalRequest`/`approvalResolved`, с #024 — `chatSession`/`composerDraft`/
+`replaceFeed`); паритет с `webview/src/messages.ts` проверяет
+`tests/chat-view.test.mjs`.
 
 Инлайн-подтверждения (#009): диспетчер маршрутизирует `approvalResolve` и
 `approvalShowDiff` в порт `approvals` (брокер), не отдавая их каркасу; запросы
 показываются в панели как `approvalRequest`, а решения уходят в брокер.
+
+## Чат, привязанный к сессии (#024)
+
+`ChatController` принимает порт `ChatSessionsPort` (`SessionManager` #007):
+снимок активной сессии, черновики и события `sessionChanged`/`statusChanged`.
+
+- события `token`/`tool.call`/`tool.result`/`turn.done`/`error` фильтруются по
+  `sessionId`: события неактивной сессии в ленту не попадают;
+- при переключении — `replaceMessages` из транскрипта (`chatTranscript.ts`,
+  история на сессию), `chatSession` (id, title, model, preset, status,
+  `historyState`) и `composerDraft`; лента и `turnId` сбрасываются;
+- `Стоп` вызывает `turn.cancel` только для активной сессии и её хода;
+- `setDraft` сохраняет черновик через порт; `openNewSession`/`retry` — CTA и
+  повтор состояния;
+- без порта сессий поведение прежнее (каркас/старые тесты).
+
+Проводка контроллера к реальному `SessionManager` (создание в активации) —
+#011: в этой ветке провайдер принимает порт `chatSession` для
+`draftChanged`/`openNewSession`/`retryChat`, но сам контроллер создаётся там,
+где появляется мост.

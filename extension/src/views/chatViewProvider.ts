@@ -16,7 +16,10 @@ import * as vscode from 'vscode';
 
 import type { ChatController } from './chatEvents';
 import { dispatchWebviewMessage } from './chatDispatch';
-import type { ApprovalDispatchPort } from './chatDispatch';
+import type {
+  ApprovalDispatchPort,
+  ChatSessionDispatchPort
+} from './chatDispatch';
 import {
   ChatSession,
   buildChatViewHtml,
@@ -45,6 +48,8 @@ export interface ChatViewProviderOptions {
   readonly chat?: ChatController | undefined;
   /** Брокер подтверждений (#009): карточки approval.* в панели. */
   readonly approvals?: ApprovalDispatchPort | undefined;
+  /** Привязка чата к сессии (#024). */
+  readonly chatSession?: ChatSessionDispatchPort | undefined;
 }
 
 const MAX_MESSAGES = 200;
@@ -173,7 +178,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       state: () => this.#options.state(),
       post: (outgoing) => this.postMessage(outgoing),
       log: (line) => this.#options.log?.(line),
-      approvals: this.#options.approvals
+      approvals: this.#options.approvals,
+      chatSession: this.#options.chatSession
     });
   }
 

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
 import { ApprovalCard } from './approvals/ApprovalCard';
 import type { ApprovalDecisionKind } from './approvals/approvalModel';
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
+import { DraftStore, switchSessionDraft } from './chat/drafts';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
@@ -13,6 +14,7 @@ import type {
   ApprovalRequestMessage,
   ChatPanelState,
   ChatPanelStatus,
+  ChatSessionDto,
   ExtensionToWebview
 } from './messages';
 import { onExtensionMessage, postToExtension } from './vscodeApi';
@@ -33,6 +35,10 @@ export function App(): ReactElement {
   const [feed, dispatch] = useReducer(chatFeedReducer, initialChatFeedState);
   const [draft, setDraft] = useState('');
   const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
+  const [session, setSession] = useState<ChatSessionDto | null>(null);
+  const draftsRef = useRef(new DraftStore());
+  const activeSessionRef = useRef<string | null>(null);
+  const draftRef = useRef('');
 
   const t = useMemo(() => createTranslator(locale), [locale]);
 
@@ -120,6 +126,54 @@ export function App(): ReactElement {
           setApprovals((previous) => previous.filter((item) => item.id !== message.id));
           break;
         }
+        case 'replaceFeed': {
+          dispatch({
+            type: 'replaceFeed',
+            records: message.records.map((record) =>
+              record.kind === 'message'
+                ? { kind: 'message' as const, message: record.message }
+                : record.kind === 'toolCall'
+                  ? {
+                      kind: 'toolCall' as const,
+                      callId: record.call.id,
+                      name: record.call.name,
+                      arguments: record.call.arguments
+                    }
+                  : {
+                      kind: 'toolResult' as const,
+                      callId: record.result.callId,
+                      ok: record.result.ok,
+                      ...(record.result.error === undefined
+                        ? { result: record.result.result }
+                        : { error: record.result.error })
+                    }
+            )
+          });
+          break;
+        }
+        case 'chatSession': {
+          const previousId = activeSessionRef.current;
+          const nextId = message.session.sessionId;
+          if (previousId !== nextId) {
+            const next = switchSessionDraft(
+              draftsRef.current,
+              previousId,
+              nextId,
+              draftRef.current
+            );
+            activeSessionRef.current = nextId;
+            draftRef.current = next;
+            setDraft(next);
+          }
+          setSession(message.session);
+          break;
+        }
+        case 'composerDraft': {
+          draftsRef.current.set(activeSessionRef.current, message.text);
+          draftRef.current = message.text;
+          setDraft(message.text);
+          break;
+        }
         default:
           break;
       }
@@ -130,10 +184,19 @@ export function App(): ReactElement {
   }, []);
 
   const send = useCallback(() => {
+    // Блокируем только явную сессию без id; при отсутствии chatSession —
+    // эхо-режим каркаса (#005), отправка должна работать.
+    if (session !== null && session.sessionId === null) {
+      return;
+    }
     const text = draft.trim();
     if (text === '') {
       return;
     }
+    draftsRef.current.set(activeSessionRef.current, '');
+    draftRef.current = '';
+    setDraft('');
+    postToExtension({ type: 'draftChanged', text: '' });
     postToExtension({ type: 'sendMessage', text });
     setDraft('');
   }, [draft]);
@@ -149,6 +212,24 @@ export function App(): ReactElement {
 
   const showApprovalDiff = useCallback((id: string) => {
     postToExtension({ type: 'approvalShowDiff', id });
+  }, []);
+
+  const changeDraft = useCallback(
+    (value: string) => {
+      draftRef.current = value;
+      setDraft(value);
+      draftsRef.current.set(activeSessionRef.current, value);
+      postToExtension({ type: 'draftChanged', text: value });
+    },
+    []
+  );
+
+  const openNewSession = useCallback(() => {
+    postToExtension({ type: 'openNewSession' });
+  }, []);
+
+  const retryChat = useCallback(() => {
+    postToExtension({ type: 'retryChat' });
   }, []);
 
   // Эхо-режим каркаса (без ChatController) шлёт chatStatus из ChatSession,
@@ -171,7 +252,22 @@ export function App(): ReactElement {
         sandboxMode={panel?.sandboxMode ?? '—'}
         status={panelStatus}
         onStop={stop}
+        sessionTitle={session?.title ?? null}
+        sessionStatus={session?.status}
+        sessionModel={session?.model}
+        sessionPreset={session?.preset}
       />
+      {feed.status === 'error' || session?.status === 'error' || session?.status === 'offline' ? (
+        <div className="dsh-banner" role="alert">
+          <span>{feed.error ?? t('status.error')}</span>
+          <button type="button" className="dsh-button" onClick={retryChat}>
+            {t('chat.retry')}
+          </button>
+        </div>
+      ) : null}
+      {session?.historyState === 'unavailable' ? (
+        <p className="dsh-chat-note">{t('chat.historyUnavailable')}</p>
+      ) : null}
       <MessageList t={t} entries={feed.entries} />
       {approvals.map((request) => (
         <ApprovalCard
@@ -182,7 +278,14 @@ export function App(): ReactElement {
           onShowDiff={showApprovalDiff}
         />
       ))}
-      <Composer t={t} value={draft} onChange={setDraft} onSubmit={send} />
+      <Composer
+        t={t}
+        value={draft}
+        onChange={changeDraft}
+        onSubmit={send}
+        disabled={session !== null && session.sessionId === null}
+        onCreateSession={openNewSession}
+      />
       <PanelStatus t={t} status={panelStatus} streamStatus={feed.status} error={feed.error} />
     </main>
   );

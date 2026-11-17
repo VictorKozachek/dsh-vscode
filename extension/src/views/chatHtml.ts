@@ -42,13 +42,36 @@ export interface ApprovalRequestMessage {
   readonly createdAt: string;
 }
 
+/** Запись ленты в порядке поступления (#024). */
+export type FeedRecordDto =
+  | { readonly kind: 'message'; readonly message: ChatMessageDto }
+  | { readonly kind: 'toolCall'; readonly call: ChatToolCallDto }
+  | { readonly kind: 'toolResult'; readonly result: ChatToolResultDto };
+
+/** Состояние привязки чата к сессии (#024). */
+export interface ChatSessionDto {
+  readonly sessionId: string | null;
+  readonly title: string | null;
+  readonly model: string;
+  readonly preset: string;
+  readonly status: string;
+  /**
+   * Состояние истории: `replayed` — восстановлена из транскрипта,
+   * `empty` — сессия новая/пустая, `unavailable` — транскрипт недоступен.
+   */
+  readonly historyState: 'replayed' | 'empty' | 'unavailable';
+}
+
 /** Сообщения WebView → extension. */
 export type WebviewMessage =
   | { readonly kind: 'ready' }
   | { readonly kind: 'stop' }
   | { readonly kind: 'sendMessage'; readonly text: string }
   | { readonly kind: 'approvalResolve'; readonly id: string; readonly decision: ApprovalDecisionDto }
-  | { readonly kind: 'approvalShowDiff'; readonly id: string };
+  | { readonly kind: 'approvalShowDiff'; readonly id: string }
+  | { readonly kind: 'draftChanged'; readonly text: string }
+  | { readonly kind: 'openNewSession' }
+  | { readonly kind: 'retryChat' };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
 export const WEBVIEW_MESSAGE_TYPES = [
@@ -56,7 +79,10 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'sendMessage',
   'stop',
   'approvalResolve',
-  'approvalShowDiff'
+  'approvalShowDiff',
+  'draftChanged',
+  'openNewSession',
+  'retryChat'
 ] as const;
 
 /** Статус потока ответа в панели. */
@@ -90,7 +116,10 @@ export const EXTENSION_MESSAGE_TYPES = [
   'chatDone',
   'chatCancelled',
   'approvalRequest',
-  'approvalResolved'
+  'approvalResolved',
+  'chatSession',
+  'composerDraft',
+  'replaceFeed'
 ] as const;
 
 /** Сообщения extension → WebView. */
@@ -106,7 +135,10 @@ export type ExtensionMessage =
   | { readonly type: 'chatDone'; readonly turnId: string; readonly finishReason: 'stop' | 'cancelled' | 'error' }
   | { readonly type: 'chatCancelled' }
   | { readonly type: 'approvalRequest'; readonly request: ApprovalRequestMessage }
-  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto };
+  | { readonly type: 'approvalResolved'; readonly id: string; readonly decision: ApprovalDecisionDto }
+  | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
+  | { readonly type: 'composerDraft'; readonly text: string }
+  | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
@@ -140,6 +172,16 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   if (type === 'approvalShowDiff') {
     const id = typeof record['id'] === 'string' ? record['id'] : '';
     return id === '' ? null : { kind: 'approvalShowDiff', id };
+  }
+  if (type === 'draftChanged') {
+    const text = typeof record['text'] === 'string' ? record['text'] : '';
+    return { kind: 'draftChanged', text };
+  }
+  if (type === 'openNewSession') {
+    return { kind: 'openNewSession' };
+  }
+  if (type === 'retryChat') {
+    return { kind: 'retryChat' };
   }
   return null;
 }
@@ -330,8 +372,15 @@ export class ChatSession {
     state: () => Omit<ChatPanelStateDto, 'status'>,
     emit: (message: ExtensionMessage) => void = () => undefined
   ): ExtensionMessage[] {
-    // Подтверждения обслуживает ApprovalBroker (#009), каркас их не трогает.
-    if (message.kind === 'approvalResolve' || message.kind === 'approvalShowDiff') {
+    // Подтверждения обслуживает ApprovalBroker (#009), привязку к сессии —
+    // ChatController (#024); каркас эти сообщения не трогает.
+    if (
+      message.kind === 'approvalResolve' ||
+      message.kind === 'approvalShowDiff' ||
+      message.kind === 'draftChanged' ||
+      message.kind === 'openNewSession' ||
+      message.kind === 'retryChat'
+    ) {
       return [];
     }
 

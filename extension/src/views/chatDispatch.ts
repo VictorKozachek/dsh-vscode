@@ -24,6 +24,13 @@ export interface ApprovalDispatchPort {
   showDiff(id: string): boolean;
 }
 
+/** Порт привязки чата к сессии (#024). */
+export interface ChatSessionDispatchPort {
+  draftChanged(text: string): void;
+  openNewSession(): void;
+  retryChat(): void;
+}
+
 /** Зависимости диспетчера. */
 export interface ChatDispatchOptions {
   /** Потоковый чат (#008); без него — эхо-режим каркаса (#005). */
@@ -34,6 +41,8 @@ export interface ChatDispatchOptions {
   readonly log?: ((line: string) => void) | undefined;
   /** Брокер подтверждений (#009); без него approval-сообщения игнорируются. */
   readonly approvals?: ApprovalDispatchPort | undefined;
+  /** Привязка чата к сессии (#024). */
+  readonly chatSession?: ChatSessionDispatchPort | undefined;
 }
 
 /**
@@ -66,6 +75,18 @@ export async function dispatchWebviewMessage(
     options.approvals?.showDiff(message.id);
     return;
   }
+  if (message.kind === 'draftChanged') {
+    options.chatSession?.draftChanged(message.text);
+    return;
+  }
+  if (message.kind === 'openNewSession') {
+    options.chatSession?.openNewSession();
+    return;
+  }
+  if (message.kind === 'retryChat') {
+    options.chatSession?.retryChat();
+    return;
+  }
 
   const chat = options.chat;
   if (chat !== undefined) {
@@ -89,6 +110,8 @@ export async function dispatchWebviewMessage(
           await post(outgoing);
         }
         await post({ type: 'chatStatus', status: chat.status });
+        // WebView готов: отдаём начальную привязку к сессии (#024).
+        chat.syncNow?.();
         return;
       }
     }
