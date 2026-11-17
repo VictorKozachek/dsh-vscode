@@ -106,3 +106,25 @@ test('активная сессия из снимка попадает в спи
   assert.equal(active.id, 'sess-existing');
   controller.dispose();
 });
+
+test('ACP-like пустой session.list: активная после resume всё равно отрисована', async () => {
+  const bridge = createBridge();
+  bridge.request = async (method, params) => {
+    bridge.calls.push({ method, params });
+    if (method === 'session.list') {
+      return { sessions: [] }; // ACP: активная появляется только после close
+    }
+    if (method === 'session.resume') {
+      return { session: { id: params.sessionId, workspaceId: 'ws', title: 'Скрытая', updatedAt: '2026-11-13T10:00:00.000Z' } };
+    }
+    throw new Error(`нет обработчика ${method}`);
+  };
+  const { controller, states, manager } = createController(bridge);
+  await manager.resume('hidden-active');
+  await controller.refresh();
+  const ready = states.at(-1);
+  assert.equal(ready.kind, 'ready');
+  const active = ready.groups.flatMap((group) => group.items).find((item) => item.badge === 'active');
+  assert.equal(active.id, 'hidden-active');
+  controller.dispose();
+});

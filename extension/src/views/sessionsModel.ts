@@ -88,12 +88,13 @@ export function bucketOf(updatedAt: string, now: Date): SessionGroupKey {
   if (Number.isNaN(timestamp)) {
     return 'earlier';
   }
-  const day = 24 * 60 * 60 * 1000;
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   if (timestamp >= startOfToday) {
     return 'today';
   }
-  if (timestamp >= startOfToday - day) {
+  // Календарный вчерашний день (а не «24 часа назад»): корректно при DST.
+  const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
+  if (timestamp >= startOfYesterday) {
     return 'yesterday';
   }
   return 'earlier';
@@ -116,17 +117,11 @@ export function buildSessionsView(input: BuildSessionsInput): SessionsViewState 
       error: { message: error, canRetry: true, settingsHint: SETTINGS_HINT }
     };
   }
-  if (input.loading === true && input.sessions.length === 0) {
-    return { kind: 'loading', groups: [] };
-  }
-  if (input.sessions.length === 0) {
-    return { kind: 'empty', groups: [] };
-  }
-
   const activeSessionId = input.snapshot.sessionId;
   const sessions = [...input.sessions];
-  // Активная сессия может отсутствовать в list (ACP отдаёт её после close) —
-  // дополняем из снимка, иначе она не отрисуется.
+  // Активная сессия может отсутствовать в list (ACP отдаёт сохранённые/
+  // закрытые, активная появляется после close) — дополняем из снимка ДО
+  // проверок loading/empty, иначе панель покажет «Сессий нет».
   if (
     activeSessionId !== null &&
     !sessions.some((session) => session.id === activeSessionId)
@@ -137,6 +132,13 @@ export function buildSessionsView(input: BuildSessionsInput): SessionsViewState 
       ...(input.snapshot.title === null ? {} : { title: input.snapshot.title }),
       updatedAt: input.snapshot.updatedAt
     });
+  }
+
+  if (input.loading === true && sessions.length === 0) {
+    return { kind: 'loading', groups: [] };
+  }
+  if (sessions.length === 0) {
+    return { kind: 'empty', groups: [] };
   }
 
   const byGroup = new Map<SessionGroupKey, SessionViewItem[]>();

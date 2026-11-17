@@ -19,6 +19,14 @@ test('узлы: загрузка, пусто, ошибка с подсказко
   assert.equal(error.description, 'Проверьте dsh.executablePath');
   assert.match(error.tooltip, /executablePath/);
   assert.deepEqual(error.command, { command: 'dsh.sessions.refresh', title: 'Повторить' });
+
+  const settings = buildSessionsNodes({
+    kind: 'error',
+    groups: [],
+    error: { message: 'spawn ENOENT', canRetry: true, settingsHint: 'Проверьте dsh.executablePath' }
+  })[1];
+  assert.equal(settings.label, 'Открыть настройки DSH');
+  assert.deepEqual(settings.command, { command: 'dsh.openSettings', title: 'Настройки DSH' });
 });
 
 test('узлы: ready отдаёт группы, активная уже первая', () => {

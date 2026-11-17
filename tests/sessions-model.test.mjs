@@ -201,3 +201,28 @@ test('подпись с пресетом и моделью, бейдж error д�
   assert.equal(item.badge, 'error');
   assert.match(item.tooltip, /пресет: worker/);
 });
+
+test('пустой session.list + активная из снимка → ready с активной (ACP-кейс)', () => {
+  const view = buildSessionsView({
+    now: NOW,
+    snapshot: snapshot({ sessionId: 'active', title: 'Активная', status: 'active' }),
+    sessions: []
+  });
+  assert.equal(view.kind, 'ready');
+  assert.equal(view.groups[0].items[0].id, 'active');
+  assert.equal(view.groups[0].items[0].badge, 'active');
+
+  const loading = buildSessionsView({
+    now: NOW,
+    snapshot: snapshot({ sessionId: 'active' }),
+    sessions: [],
+    loading: true
+  });
+  assert.equal(loading.kind, 'ready', 'loading не перекрывает активную');
+});
+
+test('bucketOf: «вчера» — календарный вчерашний день', () => {
+  const now = new Date(2026, 10, 13, 10, 0, 0);
+  assert.equal(bucketOf(new Date(2026, 10, 12, 23, 59, 0).toISOString(), now), 'yesterday');
+  assert.equal(bucketOf(new Date(2026, 10, 11, 23, 59, 0).toISOString(), now), 'earlier');
+});

@@ -34,6 +34,15 @@ export function buildSessionsNodes(state: SessionsViewState): readonly SessionsN
           ...(state.error.canRetry
             ? { command: { command: 'dsh.sessions.refresh', title: 'Повторить' } }
             : {})
+        },
+        // Кликабельная ссылка на настройки: viewsWelcome не виден, когда
+        // дерево непустое (в нём есть узел ошибки).
+        {
+          kind: 'message',
+          label: 'Открыть настройки DSH',
+          themeIcon: 'gear',
+          tooltip: 'dsh.executablePath и другие настройки DSH',
+          command: { command: 'dsh.openSettings', title: 'Настройки DSH' }
         }
       ];
     case 'empty':
