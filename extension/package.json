@@ -221,6 +221,14 @@
           "type": "boolean",
           "default": false,
           "description": "Телеметрия (по умолчанию выключена)."
+        },
+        "dsh.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Дополнительные модели профиля для формы New Session."
         }
       }
     },
