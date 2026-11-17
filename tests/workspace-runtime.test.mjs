@@ -10,7 +10,7 @@ const { DshWorkspaceRuntime, parseSandbox } = await import('../extension/src/wor
 const { WorkspaceLifecycle } = await import('../extension/src/workspace/lifecycle.ts');
 const { WorkspaceRegistry } = await import('../extension/src/workspace/registry.ts');
 
-const FIXTURE = path.resolve('tests/fixtures/fake-dsh-server.mjs');
+const FIXTURE = path.resolve('tests/fixtures/fake-acp-runtime.mjs');
 const tmpRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'dsh-runtime-lifecycle-')));
 after(() => rm(tmpRoot, { recursive: true, force: true }));
 
@@ -30,19 +30,16 @@ function createRuntime(folder, registry, posts) {
     memento,
     registry,
     sandboxMode: 'bogus', // проверяем валидацию
-    executablePath: 'dsh',
+    executablePath: FIXTURE,
+    profile: 'acp',
+    homeDirectory: tmpRoot,
     approvalPolicy: 'ask',
     log: () => undefined,
     post: (message) => {
       posts.push(message);
     },
     isActive: () => true,
-    bridgeOptions: {
-      commandBuilder: () => ({
-        executable: process.execPath,
-        args: [FIXTURE, 'serve', '--protocol=jsonrpc', '--cwd', folder.path]
-      })
-    }
+    runtimeOptions: { shutdownGraceMs: 500 }
   });
 }
 
@@ -66,6 +63,10 @@ test('A→B→A на реальном DshBridge: grace, processCount, teardown',
     await lifecycle.activate(folderA);
     const runtimeA = runtimes.get('a'.repeat(16));
     assert.equal(runtimeA.processCount, 1, 'процесс A поднят');
+    const listed = await runtimeA.sessions.list();
+    assert.ok(Array.isArray(listed), 'session.list через lifecycle-рантайм');
+    const created = await runtimeA.sessions.create({ title: 'lifecycle' });
+    assert.match(created.sessionId ?? '', /sess-/, 'session.create через lifecycle-рантайм');
 
     await lifecycle.activate(folderB);
     assert.equal(runtimeA.processCount, 1, 'A жив в grace');

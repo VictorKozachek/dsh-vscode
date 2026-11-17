@@ -8,7 +8,7 @@
 
 import * as vscode from 'vscode';
 
-import type { DshBridgeOptions } from '../bridge/dshBridge';
+import type { AcpRuntimeOptions } from '../runtime/acpRuntime';
 import type { DiffEditorPort } from '../diff/diffController';
 import type { ExtensionMessage } from '../views/chatHtml';
 import { WorkspaceRegistry } from './registry';
@@ -39,8 +39,8 @@ export interface WorkspaceLifecycleHostOptions {
   readonly postMessage?: ((message: ExtensionMessage) => Promise<void> | void) | undefined;
   /** Фабрика diff-редактора (#010) — в проде `VscodeDiffEditor`. */
   readonly createDiffEditor?: (() => DiffEditorPort) | undefined;
-  /** Подмена опций моста — интеграционные тесты. */
-  readonly bridgeOptions?: Partial<DshBridgeOptions> | undefined;
+  /** Подмена опций ACP-рантайма — интеграционные тесты. */
+  readonly runtimeOptions?: Partial<AcpRuntimeOptions> | undefined;
 }
 
 /** Disposable lifecycle + асинхронная остановка (ждёт мост). */
@@ -87,6 +87,7 @@ export function registerWorkspaceLifecycle(
   const sandboxMode = configuration.get<string>('sandboxMode');
   const approvalPolicy = configuration.get<string>('approvalPolicy');
   const executablePath = configuration.get<string>('executablePath');
+  const profile = configuration.get<string>('profile') ?? 'acp';
   const registry = registryFromConfiguration();
   const runtimes = new Map<string, DshWorkspaceRuntime>();
   let disposed = false;
@@ -99,13 +100,17 @@ export function registerWorkspaceLifecycle(
         registry,
         sandboxMode,
         executablePath,
+        profile,
+        homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
         approvalPolicy,
         log: options.log,
         post: (message) => options.postMessage?.(message),
         ...(options.createDiffEditor === undefined
           ? {}
           : { createDiffEditor: options.createDiffEditor }),
-        ...(options.bridgeOptions === undefined ? {} : { bridgeOptions: options.bridgeOptions }),
+        ...(options.runtimeOptions === undefined
+          ? {}
+          : { runtimeOptions: options.runtimeOptions }),
         // События неактивного воркспейса отбрасываются (#011).
         isActive: () => lifecycle?.acceptsEvent(folder.id) ?? false
       });

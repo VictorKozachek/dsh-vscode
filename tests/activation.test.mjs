@@ -248,19 +248,17 @@ test('активация: DSH: Prune Workspaces чистит реестр по �
 });
 
 test('активация с папкой: рантайм подключает менеджер, чат, подтверждения и контекст', async () => {
-  const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
+  const { mkdtemp, rm } = await import('node:fs/promises');
   const os = await import('node:os');
   const path = await import('node:path');
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'dsh-activation-runtime-'));
-  const wrapper = path.join(workspace, 'fake-dsh.sh');
-  await writeFile(
-    wrapper,
-    `#!/bin/sh\nexec "${process.execPath}" "${path.resolve('tests/fixtures/fake-dsh-server.mjs')}" "$@"\n`
-  );
-  await chmod(wrapper, 0o755);
 
   const { fake, state } = createFakeVscode({
-    settings: { 'dsh.executablePath': wrapper, 'dsh.workspace.graceMinutes': 0 }
+    settings: {
+      'dsh.executablePath': path.resolve('tests/fixtures/fake-acp-runtime.mjs'),
+      'dsh.profile': 'acp',
+      'dsh.workspace.graceMinutes': 0
+    }
   });
   state.workspaceFolders = [{ name: 'ws', index: 0, uri: { fsPath: workspace } }];
   const extension = loadExtensionWithFakeVscode(fake);

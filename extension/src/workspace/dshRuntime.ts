@@ -6,7 +6,7 @@
 
 import path from 'node:path';
 
-import { DshBridge, type DshBridgeOptions } from '../bridge/dshBridge';
+import { AcpRuntime, type AcpRuntimeOptions } from '../runtime/acpRuntime';
 import { ContextLoader } from '../context/contextLoader';
 import { ApprovalBroker } from '../approvals/approvalBroker';
 import { createNodePathProbe } from '../approvals/pathProbe';
@@ -38,6 +38,8 @@ export interface DshWorkspaceRuntimeOptions {
   readonly registry: WorkspaceRegistry;
   readonly sandboxMode: string | undefined;
   readonly executablePath: string | undefined;
+  readonly profile?: string | undefined;
+  readonly homeDirectory?: string | undefined;
   readonly approvalPolicy: string | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly log: (line: string) => void;
@@ -47,15 +49,15 @@ export interface DshWorkspaceRuntimeOptions {
   readonly createDiffEditor?: (() => DiffEditorPort) | undefined;
   /** Активен ли воркспейс: события чужих воркспейсов отбрасываются. */
   readonly isActive?: (() => boolean) | undefined;
-  /** Подмена команды запуска DSH — для интеграционных тестов. */
-  readonly bridgeOptions?: Partial<DshBridgeOptions> | undefined;
+  /** Подмена опций ACP-рантайма — для интеграционных тестов. */
+  readonly runtimeOptions?: Partial<AcpRuntimeOptions> | undefined;
 }
 
 /** Рантайм воркспейса с компонентами для UI. */
 export class DshWorkspaceRuntime implements WorkspaceRuntime {
   readonly workspaceId: string;
   readonly workspacePath: string;
-  readonly #bridge: DshBridge;
+  readonly #bridge: AcpRuntime;
   readonly #sessions: SessionManager;
   readonly #loader: ContextLoader;
   readonly #chat: ChatController;
@@ -73,14 +75,19 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     this.#isActive = options.isActive ?? (() => true);
     const sandboxMode = parseSandbox(options.sandboxMode);
 
-    this.#bridge = new DshBridge({
-      cwd: folder.path,
-      sandboxMode,
+    this.#bridge = new AcpRuntime({
+      workspacePath: folder.path,
       ...(options.executablePath === undefined || options.executablePath === ''
         ? {}
         : { executablePath: options.executablePath }),
-      logger: { appendLine: (line) => options.log(`[${folder.id}] ${line}`) },
-      ...options.bridgeOptions
+      ...(options.profile === undefined ? {} : { profile: options.profile }),
+      homeDirectory:
+        options.homeDirectory ??
+        process.env['HOME'] ??
+        process.env['USERPROFILE'] ??
+        '',
+      logger: (line) => options.log(`[${folder.id}] ${line}`),
+      ...options.runtimeOptions
     });
     this.#sessions = new SessionManager({
       workspaceId: folder.id,
@@ -169,7 +176,7 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   get processCount(): number {
-    return this.#bridge.processCount;
+    return this.#bridge.processId === undefined ? 0 : 1;
   }
 
   get state(): string {
