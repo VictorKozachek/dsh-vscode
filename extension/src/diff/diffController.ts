@@ -14,14 +14,6 @@ export interface DiffEditorPort {
   applyBatch(
     files: readonly { readonly path: string; readonly content: string; readonly created: boolean }[]
   ): Promise<boolean>;
-  /** Вернуть исходное содержимое пачки (после расхождения); `created` — удалить. */
-  restore(
-    files: readonly {
-      readonly path: string;
-      readonly originalContent: string;
-      readonly created: boolean;
-    }[]
-  ): Promise<boolean>;
   /** Убрать виртуальные документы предпросмотра (все). */
   clearPreviews(): void;
   showError(message: string): void;
@@ -100,16 +92,15 @@ export class DiffController {
 
     const check = await this.#service.checkApplied(preview);
     if (check.status === 'mismatch') {
-      // Восстанавливаем исходное содержимое всей пачки: транзакция не должна
-      // оставлять файлы в промежуточном состоянии.
-      await this.#editor.restore(
-        preview.files.map((file) => ({
-          path: file.path,
-          originalContent: file.originalContent,
-          created: file.created
-        }))
+      // После неудачной сверки нельзя понять, это сбой применения или чужая
+      // правка. Ничего не перезаписываем (иначе затрём внешние изменения),
+      // сообщаем конфликт и оставляем файлы пользователю/undo редактора.
+      const changed = await this.#service.changedSinceApply(preview);
+      this.#pending = undefined;
+      this.#editor.clearPreviews();
+      this.#editor.showError(
+        `содержимое после применения не совпало — ${changed.join(', ') || check.path}`
       );
-      this.#editor.showError(`содержимое после применения не совпало — ${check.path}`);
       return 'conflict';
     }
 

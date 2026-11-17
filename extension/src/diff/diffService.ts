@@ -17,7 +17,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /** Правка одного файла. */
@@ -78,12 +78,25 @@ export type RevertResult =
   | { readonly status: 'conflict'; readonly path: string }
   | { readonly status: 'failed'; readonly path: string; readonly error: string };
 
+/** Проба пути: отличает «нет файла» от «есть, но не резолвится» (symlink/EACCES). */
+export type DiffPathProbe =
+  | { readonly status: 'ok'; readonly realPath: string }
+  | { readonly status: 'missing' }
+  | { readonly status: 'blocked'; readonly reason: string };
+
 /** Порт файловой системы. */
 export interface DiffFileSystem {
   readFile(filePath: string): Promise<string | null>;
   writeFile(filePath: string, content: string): Promise<void>;
   removeFile?(filePath: string): Promise<void>;
   realpath?(filePath: string): Promise<string | null>;
+  /**
+   * `lstat` + `realpath`: `ok` (реальный путь), `missing` (ENOENT),
+   * `blocked` (компонент существует, но не резолвится — битая symlink/EACCES).
+   * Для нового файла обязательна: иначе нельзя отличить отсутствие от битой
+   * ссылки, и граница становится fail-open.
+   */
+  probePath?(filePath: string): Promise<DiffPathProbe>;
 }
 
 /** Ошибки сервиса с машинным кодом. */
@@ -297,6 +310,18 @@ export class DiffService {
     return { status: 'ok' };
   }
 
+  /** Файлы, содержимое которых после применения не совпадает с newContent. */
+  async changedSinceApply(preview: Preview): Promise<readonly string[]> {
+    const changed: string[] = [];
+    for (const file of preview.files) {
+      const current = await this.#fs.readFile(file.path);
+      if (current !== file.newContent) {
+        changed.push(file.relativePath);
+      }
+    }
+    return changed;
+  }
+
   /** Совпадает ли реальное содержимое с предпросмотром (после WorkspaceEdit). */
   async checkApplied(
     preview: Preview
@@ -395,21 +420,65 @@ export class DiffService {
       );
     }
 
-    if (this.#fs.realpath === undefined) {
-      return absolute;
+    const probe = async (candidate: string): Promise<DiffPathProbe> => {
+      if (this.#fs.probePath !== undefined) {
+        try {
+          return await this.#fs.probePath(candidate);
+        } catch (error) {
+          return {
+            status: 'blocked',
+            reason: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+      if (this.#fs.realpath === undefined) {
+        return { status: 'ok', realPath: candidate };
+      }
+      try {
+        const resolved = await this.#fs.realpath(candidate);
+        return resolved === null ? { status: 'missing' } : { status: 'ok', realPath: resolved };
+      } catch (error) {
+        return {
+          status: 'blocked',
+          reason: error instanceof Error ? error.message : String(error)
+        };
+      }
+    };
+
+    const rootProbe = await probe(this.#root);
+    const realRoot = rootProbe.status === 'ok' ? rootProbe.realPath : this.#root;
+
+    const target = await probe(absolute);
+    if (target.status === 'ok') {
+      if (!isInside(realRoot, target.realPath)) {
+        throw new DiffServiceError(
+          'outside-workspace',
+          `правка ведёт за пределы воркспейса (symlink): ${inputPath}`
+        );
+      }
+      return target.realPath;
+    }
+    if (target.status === 'blocked') {
+      throw new DiffServiceError(
+        'outside-workspace',
+        `не удалось проверить реальный путь (${target.reason}): ${inputPath}`
+      );
     }
 
-    const realRoot = (await this.#fs.realpath(this.#root)) ?? this.#root;
-    // Для нового пути realpath даёт null: идём вверх до ближайшего
-    // существующего предка и приклеиваем остаток — иначе link/newdir/file
-    // выглядел бы «внутри» root.
-    let candidate = absolute;
-    const rest: string[] = [];
-    let realTarget: string | null = null;
+    // `missing`: новый файл — ищем ближайшего существующего предка. Битая
+    // ссылка или ошибка lstat/realpath у любого компонента — fail-closed.
+    let candidate = path.dirname(absolute);
+    const rest: string[] = [path.basename(absolute)];
     for (let depth = 0; depth < 64; depth += 1) {
-      realTarget = await this.#fs.realpath(candidate);
-      if (realTarget !== null) {
-        const full = rest.length === 0 ? realTarget : path.join(realTarget, ...rest);
+      const ancestor = await probe(candidate);
+      if (ancestor.status === 'blocked') {
+        throw new DiffServiceError(
+          'outside-workspace',
+          `не удалось проверить предка (${ancestor.reason}): ${inputPath}`
+        );
+      }
+      if (ancestor.status === 'ok') {
+        const full = path.join(ancestor.realPath, ...rest);
         if (!isInside(realRoot, full)) {
           throw new DiffServiceError(
             'outside-workspace',
@@ -456,8 +525,37 @@ export function createNodeDiffFileSystem(): DiffFileSystem {
       } catch {
         return null;
       }
+    },
+    async probePath(filePath: string): Promise<DiffPathProbe> {
+      try {
+        await lstat(filePath);
+      } catch (error) {
+        if (isNotFound(error)) {
+          return { status: 'missing' };
+        }
+        return {
+          status: 'blocked',
+          reason: error instanceof Error ? error.message : String(error)
+        };
+      }
+      try {
+        return { status: 'ok', realPath: await realpath(filePath) };
+      } catch (error) {
+        return {
+          status: 'blocked',
+          reason: error instanceof Error ? error.message : String(error)
+        };
+      }
     }
   };
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  );
 }
 
 /** Применяет одну операцию к содержимому файла. */

@@ -25,7 +25,7 @@ async function workspace(files = {}) {
 }
 
 /** Фейковый редактор: атомарная пачка, restore и undo-стек. */
-function createEditor({ corrupt = false, failOnWrite = 0 } = {}) {
+function createEditor({ corrupt = false, failOnWrite = 0, externalChange = null } = {}) {
   const shown = [];
   const errors = [];
   const infos = [];
@@ -60,6 +60,9 @@ function createEditor({ corrupt = false, failOnWrite = 0 } = {}) {
           await writeFile(file.path, content);
           entries.push({ path: file.path, previous });
         }
+        if (externalChange !== null) {
+          await writeFile(externalChange.path, externalChange.content);
+        }
         stack.push(...entries);
         return true;
       } catch {
@@ -77,16 +80,6 @@ function createEditor({ corrupt = false, failOnWrite = 0 } = {}) {
         }
         return false;
       }
-    },
-    async restore(files) {
-      for (const file of files) {
-        if (file.created) {
-          await rm(file.path, { force: true });
-        } else {
-          await writeFile(file.path, file.originalContent);
-        }
-      }
-      return true;
     },
     clearPreviews() {},
     showError(message) {
@@ -238,7 +231,7 @@ test('пачка атомарна: сбой второго файла не ос�
   assert.equal(editor.applied.length, 2, 'пачка была передана целиком');
 });
 
-test('расхождение в пачке возвращает исходное содержимое всех файлов', async () => {
+test('расхождение в пачке: конфликт без перезаписи, undo остаётся пользователю', async () => {
   const root = await workspace({ 'a.txt': 'A\n', 'b.txt': 'B\n' });
   const editor = createEditor({ corrupt: true });
   const { controller, service } = makeController(root, editor);
@@ -250,8 +243,31 @@ test('расхождение в пачке возвращает исходное
   const result = await controller.apply();
 
   assert.equal(result, 'conflict');
-  assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'A\n');
-  assert.equal(await readFile(path.join(root, 'b.txt'), 'utf8'), 'B\n');
+  assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'A2\n', 'файл не перезаписан');
+  assert.equal(
+    await readFile(path.join(root, 'b.txt'), 'utf8'),
+    'B2\nПОВРЕЖДЕНО',
+    'неизвестное расхождение не затирается'
+  );
   assert.equal(service.canRevert, false);
   assert.ok(editor.errors.some((message) => message.includes('не совпало')));
+});
+
+test('mismatch не затирает внешние правки: файлы остаются как есть, конфликт сообщён', async () => {
+  const root = await workspace({ 'a.txt': 'A\n', 'b.txt': 'B\n' });
+  const editor = createEditor({
+    externalChange: { path: path.join(root, 'b.txt'), content: 'ВНЕШНЕЕ\n' }
+  });
+  const { controller } = makeController(root, editor);
+
+  await controller.preview([
+    { path: 'a.txt', operations: [{ kind: 'replaceFile', content: 'A2\n' }] },
+    { path: 'b.txt', operations: [{ kind: 'replaceFile', content: 'B2\n' }] }
+  ]);
+  const result = await controller.apply();
+
+  assert.equal(result, 'conflict');
+  assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'A2\n', 'свой файл не перезаписан');
+  assert.equal(await readFile(path.join(root, 'b.txt'), 'utf8'), 'ВНЕШНЕЕ\n', 'чужое не затёрто');
+  assert.ok(editor.errors.some((message) => message.includes('b.txt')));
 });

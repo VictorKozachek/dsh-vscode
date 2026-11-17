@@ -71,25 +71,6 @@ export class VscodeDiffEditor implements DiffEditorPort {
     return vscode.workspace.applyEdit(edit);
   }
 
-  async restore(
-    files: readonly {
-      readonly path: string;
-      readonly originalContent: string;
-      readonly created: boolean;
-    }[]
-  ): Promise<boolean> {
-    const edit = new vscode.WorkspaceEdit();
-    for (const file of files) {
-      const uri = vscode.Uri.file(file.path);
-      if (file.created) {
-        edit.deleteFile(uri, { ignoreIfNotExists: true });
-        continue;
-      }
-      await this.#addContentToEdit(edit, file.path, file.originalContent, false);
-    }
-    return vscode.workspace.applyEdit(edit);
-  }
-
   async #addContentToEdit(
     edit: vscode.WorkspaceEdit,
     filePath: string,

@@ -347,3 +347,63 @@ test('CRLF и завершающий перевод строки сохраня�
   await diff.apply();
   assert.equal(await readFile(path.join(root, 'a.txt'), 'utf8'), 'a\r\nb\r\nc\r\n');
 });
+
+test('битая финальная symlink — правка отклоняется (fail-closed)', async () => {
+  const root = await makeWorkspace({});
+  const outside = path.join(tmpRoot, `broken-target-${String(counter)}.ts`);
+  const { symlink } = await import('node:fs/promises');
+  await symlink(outside, path.join(root, 'link'), 'file');
+
+  const diff = service(root);
+  await assert.rejects(
+    () =>
+      diff.preview([
+        { path: 'link', operations: [{ kind: 'replaceFile', content: 'escaped!' }] }
+      ]),
+    (error) => error instanceof DiffServiceError && error.code === 'outside-workspace'
+  );
+});
+
+test('битый symlink-предок нового файла — правка отклоняется', async () => {
+  const root = await makeWorkspace({});
+  const missingDir = path.join(tmpRoot, `missing-dir-${String(counter)}`);
+  const { symlink } = await import('node:fs/promises');
+  await symlink(missingDir, path.join(root, 'linkdir'), 'dir');
+
+  const diff = service(root);
+  await assert.rejects(
+    () =>
+      diff.preview([
+        { path: 'linkdir/file.ts', operations: [{ kind: 'replaceFile', content: 'x' }] }
+      ]),
+    (error) => error instanceof DiffServiceError && error.code === 'outside-workspace'
+  );
+});
+
+test('ошибка lstat/realpath (EACCES) не отступает к предку — fail-closed', async () => {
+  const root = await makeWorkspace({ 'src/a.ts': 'x\n' });
+  const base = createNodeDiffFileSystem();
+  const flaky = {
+    ...base,
+    async probePath() {
+      return { status: 'blocked', reason: 'EACCES' };
+    }
+  };
+  const diff = service(root, flaky);
+  await assert.rejects(
+    () => diff.preview([{ path: 'src/new.ts', operations: [{ kind: 'replaceFile', content: 'x' }] }]),
+    (error) => error instanceof DiffServiceError && error.code === 'outside-workspace'
+  );
+
+  const throwing = {
+    ...base,
+    async probePath() {
+      throw new Error('EACCES');
+    }
+  };
+  const second = service(root, throwing);
+  await assert.rejects(
+    () => second.preview([{ path: 'src/new.ts', operations: [{ kind: 'replaceFile', content: 'x' }] }]),
+    (error) => error instanceof DiffServiceError && error.code === 'outside-workspace'
+  );
+});
