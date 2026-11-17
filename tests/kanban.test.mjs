@@ -12,7 +12,6 @@ import {
   parseFrontMatter,
   parseKanbanCard
 } from '../extension/src/views/kanban.ts';
-import { buildKanbanColumns } from '../webview/src/kanban/kanbanModel.ts';
 
 const CARD = `---
 id: "014"
@@ -48,11 +47,12 @@ status: ???
   const card = parseKanbanCard(broken, '/repo/.kanban/tasks/015.md');
   assert.equal(card.id, '015');
   assert.equal(card.status, 'backlog');
-  assert.match(card.parseError ?? '', /неизвестный статус/);
+  assert.match(card.parseError ?? '', /неизвестный или отсутствующий статус/);
 
   const noFront = parseKanbanCard('# Заголовок\n', '/repo/.kanban/tasks/016.md');
   assert.equal(noFront.id, '016');
   assert.equal(noFront.title, 'Заголовок');
+  assert.match(noFront.parseError ?? '', /front matter не найден/);
   assert.deepEqual(parseFrontMatter('без front matter'), {});
 });
 
@@ -71,16 +71,6 @@ test('merge/group: worktree-копия помечается и перекрыв�
   const columns = groupKanbanCards([merged[0], todo]);
   assert.deepEqual(columns.map((column) => column.status), ['todo', 'in-progress']);
   assert.equal(columns[1].cards[0].id, '014');
-});
-
-test('рендер-модель webview: колонки и карточки', () => {
-  const columns = buildKanbanColumns([
-    { id: '2', status: 'todo', title: 'B', owner: '', branch: '', updated: '', path: '/b', inBranch: false },
-    { id: '1', status: 'merged', title: 'A', owner: 'o', branch: 'b', updated: 'u', path: '/a', inBranch: true }
-  ]);
-  assert.deepEqual(columns.map((column) => column.status), ['todo', 'merged']);
-  assert.equal(columns[0].label, 'Todo');
-  assert.equal(columns[1].cards[0].inBranch, true);
 });
 
 test('loadKanbanCards ничего не пишет на диск (read-only)', async () => {

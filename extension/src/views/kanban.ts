@@ -81,6 +81,7 @@ function normalizeStatus(value: string | undefined): KanbanStatus | null {
 /** Разбирает карточку; битый front matter не бросает исключение. */
 export function parseKanbanCard(content: string, filePath: string): KanbanCard {
   const idFromPath = /(?:^|\/)(\d+)\.md$/.exec(filePath)?.[1] ?? '';
+  const hasFrontMatter = /^---\s*\n[\s\S]*?\n---\s*(?:\n|$)/.test(content);
   const front = parseFrontMatter(content);
   const status = normalizeStatus(front['status']);
   const heading = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? '';
@@ -94,8 +95,12 @@ export function parseKanbanCard(content: string, filePath: string): KanbanCard {
     updated: front['updated'] ?? '',
     path: filePath,
     inBranch,
-    ...(status === null && front['status'] !== undefined
-      ? { parseError: `неизвестный статус: ${front['status']}` }
+    ...(status === null
+      ? {
+          parseError: hasFrontMatter
+            ? `неизвестный или отсутствующий статус: ${front['status'] ?? '—'}`
+            : 'front matter не найден или битый'
+        }
       : {})
   };
 }

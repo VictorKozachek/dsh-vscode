@@ -73,7 +73,7 @@ const expectedSettings = {
   'dsh.workspace.graceMinutes': { type: 'number', default: 10 },
   'dsh.primaryWorkspace': { type: 'string', default: '' },
   'dsh.models': { type: 'array', default: [] },
-  'dsh.kanban.enabled': { type: 'boolean', default: false },
+  'dsh.kanban.enabled': { type: 'boolean', default: true },
   'dsh.telemetry.enabled': { type: 'boolean', default: false }
 };
 

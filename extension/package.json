@@ -51,7 +51,8 @@
           "id": "dsh.kanban",
           "name": "Kanban",
           "type": "tree",
-          "contextualTitle": "DSH"
+          "contextualTitle": "DSH",
+          "when": "config.dsh.kanban.enabled"
         }
       ]
     },
@@ -247,7 +248,7 @@
         },
         "dsh.kanban.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Показывать доску задач проекта."
         },
         "dsh.telemetry.enabled": {

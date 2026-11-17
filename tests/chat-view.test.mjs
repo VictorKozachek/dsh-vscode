@@ -195,6 +195,7 @@ test('манифест: контейнер DSH в activity bar и view dsh.chat'
   assert.equal(context.type, 'tree');
   const kanban = views.find((view) => view.id === 'dsh.kanban');
   assert.equal(kanban.type, 'tree');
+  assert.equal(kanban.when, 'config.dsh.kanban.enabled');
   const sessions = views.find((view) => view.id === 'dsh.sessions');
   assert.equal(sessions.type, 'tree');
   assert.equal(sessions.name, 'Sessions');
