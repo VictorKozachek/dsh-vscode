@@ -258,3 +258,31 @@ test('активация: рантайм #021 создаётся из настр
   extension.deactivate();
   assert.equal(extension.getDshRuntime(), undefined);
 });
+
+test('активация: рантайм #021 стартует из Extension Host, session.list/create, stop', async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dsh-activation-runtime-'));
+  const { fake, state } = createFakeVscode({
+    settings: {
+      'dsh.executablePath': path.resolve('tests/fixtures/fake-acp-runtime.mjs'),
+      'dsh.profile': 'acp'
+    }
+  });
+  state.workspaceFolders = [{ name: 'ws', index: 0, uri: { fsPath: workspace } }];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const runtime = extension.getDshRuntime();
+  assert.ok(runtime, 'рантайм создан в активации');
+  await runtime.start();
+  assert.equal(runtime.state, 'running', runtime.diagnostics.message);
+
+  const listed = await runtime.request('session.list', { workspaceId: 'ws' });
+  assert.ok(Array.isArray(listed.sessions));
+  const created = await runtime.request('session.create', { workspaceId: 'ws' });
+  assert.match(created.sessionId, /sess-/);
+
+  await runtime.stop();
+  assert.equal(runtime.state, 'stopped');
+  extension.deactivate();
+  await rm(workspace, { recursive: true, force: true });
+});

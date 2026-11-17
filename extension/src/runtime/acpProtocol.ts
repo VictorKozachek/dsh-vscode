@@ -36,11 +36,21 @@ export function toAcpCall(
     case 'session.list':
       return { method: 'session/list', params: { cwd } };
 
-    case 'session.create':
+    case 'session.create': {
+      // Дополнительные параметры профиля (#023) доходят до рантайма; ACP
+      // игнорирует неизвестные ключи, а fake-ACP проверяет их наличие.
+      const extra: Record<string, unknown> = {};
+      for (const key of ['model', 'preset', 'sandbox', 'approval']) {
+        const value = params[key];
+        if (typeof value === 'string' && value !== '') {
+          extra[key] = value;
+        }
+      }
       return {
         method: 'session/new',
-        params: { cwd, mcpServers: [] }
+        params: { cwd, mcpServers: [], ...extra }
       };
+    }
 
     case 'session.resume':
       return {

@@ -114,6 +114,10 @@ export interface SessionCreateParams {
   readonly workspaceId: string;
   readonly model?: string;
   readonly title?: string;
+  /** Поля #023/#021: пресет и политики, которые доходят до ACP-рантайма. */
+  readonly preset?: string;
+  readonly sandbox?: string;
+  readonly approval?: string;
 }
 
 export interface SessionCreateResult {

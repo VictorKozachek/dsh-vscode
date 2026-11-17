@@ -165,3 +165,25 @@ test('ACP-методы в protocol/ совпадают с маппингом р�
   assert.equal(ACP_METHODS.sessionUpdate, 'session/update');
   assert.equal(ACP_METHODS.requestPermission, 'session/request_permission');
 });
+
+test('session.create передаёт model/preset/sandbox/approval в ACP', () => {
+  const call = toAcpCall(
+    'session.create',
+    {
+      workspaceId: 'ws',
+      model: 'deepseek-v4',
+      preset: 'worker',
+      sandbox: 'danger-full-access',
+      approval: 'never'
+    },
+    CWD
+  );
+  assert.deepEqual(call.params, {
+    cwd: CWD,
+    mcpServers: [],
+    model: 'deepseek-v4',
+    preset: 'worker',
+    sandbox: 'danger-full-access',
+    approval: 'never'
+  });
+});
