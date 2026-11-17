@@ -14,8 +14,7 @@ import type { LifecycleState } from './workspace/lifecycle';
 import { VscodeDiffEditor } from './diff/diffEditor';
 import type { DshWorkspaceRuntime } from './workspace/dshRuntime';
 import type { ExtensionMessage } from './views/chatHtml';
-import { AcpRuntime } from './runtime/acpRuntime';
-import type { RuntimeState } from './runtime/acpRuntime';
+import type { AcpRuntime, RuntimeState } from './runtime/acpRuntime';
 
 /**
  * Идентификаторы команд расширения. Совпадают с `contributes.commands`
@@ -182,16 +181,13 @@ export function activate(context: vscode.ExtensionContext): void {
       setSessionManager(null);
       setDiffController(null);
       lastContextPack = undefined;
-      void dshRuntime?.dispose();
-      dshRuntime = undefined;
+      // Рантайм A остаётся жить в grace period: dispose делает lifecycle.
       return;
     }
     const runtime = handle.runtime;
-    // Статус/версии #021 — от активного lifecycle-рантайма, не от глобального.
-    if (dshRuntime !== runtime.acpRuntime) {
-      void dshRuntime?.dispose();
-      dshRuntime = runtime.acpRuntime;
-    }
+    // Статус/версии #021 — от активного lifecycle-рантайма; старый не
+    // закрываем — его держит grace period lifecycle.
+    dshRuntime = runtime.acpRuntime;
     updateStatusBarRuntime(runtime.acpRuntime.state);
     chatView.setChat(runtime.chat);
     chatView.setApprovals({
@@ -232,23 +228,6 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  const folderPath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
-  if (typeof folderPath === 'string' && folderPath !== '') {
-    const configuration = vscode.workspace.getConfiguration('dsh');
-    dshRuntime = new AcpRuntime({
-      workspacePath: folderPath,
-      executablePath: configuration.get<string>('executablePath') ?? 'dsh',
-      profile: configuration.get<string>('profile') ?? 'acp',
-      homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
-      logger: (line) => {
-        log.appendLine(line);
-      },
-      onStateChanged: (state) => {
-        updateStatusBarRuntime(state);
-      }
-    });
-  }
-
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       updateStatusBar();
@@ -258,7 +237,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
-  void dshRuntime?.dispose();
+  // Рантаймы закрывает lifecycle.disposeAsync (teardownAll).
   dshRuntime = undefined;
   await workspaceLifecycle?.disposeAsync();
   workspaceLifecycle = undefined;

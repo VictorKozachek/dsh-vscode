@@ -347,20 +347,16 @@ test('Sessions «+» открывает диалог New Session (#023), а не
   extension.deactivate();
 });
 
-test('активация: рантайм #021 создаётся из настроек, без спавна при старте', () => {
+test('активация: без открытой папки lifecycle не создаёт рантайм', () => {
   const { fake, state } = createFakeVscode({
     settings: { 'dsh.executablePath': 'dsh', 'dsh.profile': 'acp' }
   });
   const extension = loadExtensionWithFakeVscode(fake);
   extension.activate({ subscriptions: [] });
 
-  const runtime = extension.getDshRuntime();
-  assert.ok(runtime, 'рантайм создан');
-  assert.equal(runtime.state, 'stopped', 'без спавна при активации');
-  assert.equal(runtime.diagnostics.state, 'stopped');
+  assert.equal(extension.getDshRuntime(), undefined);
   assert.equal(state.errors.length, 0);
   extension.deactivate();
-  assert.equal(extension.getDshRuntime(), undefined);
 });
 
 test('активация: рантайм #021 стартует из Extension Host, session.list/create, stop', async () => {
@@ -375,9 +371,12 @@ test('активация: рантайм #021 стартует из Extension Ho
   const extension = loadExtensionWithFakeVscode(fake);
   extension.activate({ subscriptions: [] });
 
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline && extension.getDshRuntime() === undefined) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   const runtime = extension.getDshRuntime();
-  assert.ok(runtime, 'рантайм создан в активации');
-  await runtime.start();
+  assert.ok(runtime, 'рантайм активного lifecycle-воркспейса');
   assert.equal(runtime.state, 'running', runtime.diagnostics.message);
   assert.match(state.statusBar.text, /ACP 9\.9\.9/, 'версия ACP в статус-баре');
 
@@ -386,8 +385,60 @@ test('активация: рантайм #021 стартует из Extension Ho
   const created = await runtime.request('session.create', { workspaceId: 'ws' });
   assert.match(created.sessionId, /sess-/);
 
-  await runtime.stop();
-  assert.equal(runtime.state, 'stopped');
   extension.deactivate();
   await rm(workspace, { recursive: true, force: true });
+});
+
+test('extension-lifecycle: A→B→A в grace не перезапускает процесс A', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const first = await mkdtemp(path.join(os.tmpdir(), 'dsh-switch-a-'));
+  const second = await mkdtemp(path.join(os.tmpdir(), 'dsh-switch-b-'));
+  const { fake, state } = createFakeVscode({
+    settings: {
+      'dsh.executablePath': path.resolve('tests/fixtures/fake-acp-runtime.mjs'),
+      'dsh.profile': 'acp',
+      'dsh.workspace.graceMinutes': 10
+    }
+  });
+  state.workspaceFolders = [{ name: 'a', index: 0, uri: { fsPath: first } }];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+
+  const waitFor = async (predicate, timeoutMs = 8000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !predicate()) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return predicate();
+  };
+
+  assert.ok(await waitFor(() => extension.getDshRuntime()?.state === 'running'));
+  const runtimeA = extension.getDshRuntime();
+  const pidA = runtimeA.processId;
+
+  state.workspaceFolders = [{ name: 'b', index: 0, uri: { fsPath: second } }];
+  for (const listener of state.changeListeners) {
+    listener({ added: [], removed: [] });
+  }
+  assert.ok(
+    await waitFor(
+      () => extension.getDshRuntime() !== undefined && extension.getDshRuntime() !== runtimeA
+    ),
+    'активен B'
+  );
+
+  state.workspaceFolders = [{ name: 'a', index: 0, uri: { fsPath: first } }];
+  for (const listener of state.changeListeners) {
+    listener({ added: [], removed: [] });
+  }
+  assert.ok(await waitFor(() => extension.getDshRuntime() === runtimeA), 'A возобновлён');
+  assert.equal(runtimeA.processId, pidA, 'процесс A не перезапускался в grace');
+  assert.equal(runtimeA.state, 'running');
+
+  await extension.deactivate();
+  assert.equal(runtimeA.processId, undefined);
+  await rm(first, { recursive: true, force: true });
+  await rm(second, { recursive: true, force: true });
 });
