@@ -48,6 +48,7 @@ function createFakeVscode({ settings = {} } = {}) {
 
   const fake = {
     StatusBarAlignment: { Left: 1, Right: 2 },
+    ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
     TreeItem: FakeTreeItem,
     TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
     ThemeIcon: FakeThemeIcon,
@@ -93,6 +94,13 @@ function createFakeVscode({ settings = {} } = {}) {
         state.errors.push(message);
         return undefined;
       },
+      async showWarningMessage(message) {
+        state.messages.push(message);
+        return undefined;
+      },
+      async showQuickPick(items) {
+        return typeof state.quickPick === 'string' ? state.quickPick : items[0];
+      },
       registerWebviewViewProvider(viewType, provider) {
         state.viewProviders.set(viewType, provider);
         return { dispose() {} };
@@ -112,9 +120,6 @@ function createFakeVscode({ settings = {} } = {}) {
       async showInputBox() {
         return undefined;
       },
-      async showWarningMessage(_message, _options, ...items) {
-        return items[0];
-      }
     },
     commands: {
       registerCommand(id, handler) {
@@ -135,6 +140,9 @@ function createFakeVscode({ settings = {} } = {}) {
         return {
           get(key) {
             return state.settings[`${section}.${key}`];
+          },
+          async update(key, value) {
+            state.settings[`${section}.${key}`] = value;
           }
         };
       },
@@ -197,6 +205,7 @@ test('активация: все команды каркаса зарегист�
 
   const commandIds = [...state.commands.keys()].sort();
   assert.deepEqual(commandIds, [
+    'dsh.choosePrimaryWorkspace',
     'dsh.newSession',
     'dsh.openSettings',
     'dsh.openTaskBoard',
@@ -347,4 +356,23 @@ test('активация: рантайм #021 стартует из Extension Ho
   assert.equal(runtime.state, 'stopped');
   extension.deactivate();
   await rm(workspace, { recursive: true, force: true });
+});
+
+
+test('multi-root: primary из настройки виден в статус-баре и выбирается командой', async () => {
+  const { fake, state } = createFakeVscode({
+    settings: { 'dsh.primaryWorkspace': 'second' }
+  });
+  state.workspaceFolders = [
+    { name: 'first', index: 0 },
+    { name: 'second', index: 1 }
+  ];
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({ subscriptions: [] });
+  assert.equal(state.statusBar.text, 'DSH · second · idle');
+
+  state.quickPick = 'first';
+  await state.commands.get('dsh.choosePrimaryWorkspace')();
+  assert.equal(state.settings['dsh.primaryWorkspace'], 'first');
+  assert.equal(state.statusBar.text, 'DSH · first · idle');
 });

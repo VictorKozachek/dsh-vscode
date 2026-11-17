@@ -135,6 +135,11 @@
         "command": "dsh.revertLastEdit",
         "title": "Revert Last Edit",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.choosePrimaryWorkspace",
+        "title": "Choose Primary Workspace",
+        "category": "DSH"
       }
     ],
     "configuration": {
@@ -221,6 +226,11 @@
           "type": "boolean",
           "default": false,
           "description": "Телеметрия (по умолчанию выключена)."
+        },
+        "dsh.primaryWorkspace": {
+          "type": "string",
+          "default": "",
+          "description": "Имя primary-папки multi-root (пусто — первая по index)."
         }
       }
     },

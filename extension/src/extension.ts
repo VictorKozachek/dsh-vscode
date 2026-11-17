@@ -6,6 +6,11 @@ import type { ChatPanelStateDto } from './views/chatHtml';
 import { createSessionCommands, type SessionManager } from './sessions/sessionManager';
 import type { DiffController } from './diff/diffController';
 import { PRUNE_WORKSPACES_COMMAND, WorkspaceRegistry } from './workspace/registry';
+import {
+  checkRemoteRuntime,
+  remoteKind,
+  translateWorkspacePath
+} from './workspace/remote';
 import { AcpRuntime } from './runtime/acpRuntime';
 import type { RuntimeState } from './runtime/acpRuntime';
 
@@ -21,7 +26,8 @@ export const COMMAND_IDS = {
   stopAgent: 'dsh.stopAgent',
   showContextInspector: 'dsh.showContextInspector',
   resumeLastSession: 'dsh.resumeLastSession',
-  openSettings: 'dsh.openSettings'
+  openSettings: 'dsh.openSettings',
+  choosePrimaryWorkspace: 'dsh.choosePrimaryWorkspace'
 } as const;
 
 export type CommandId = (typeof COMMAND_IDS)[keyof typeof COMMAND_IDS];
@@ -34,10 +40,12 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
   [COMMAND_IDS.stopAgent]: 'DSH: Stop Agent',
   [COMMAND_IDS.showContextInspector]: 'DSH: Show Context Inspector',
   [COMMAND_IDS.resumeLastSession]: 'DSH: Resume Last Session',
-  [COMMAND_IDS.openSettings]: 'DSH: Open Settings'
+  [COMMAND_IDS.openSettings]: 'DSH: Open Settings',
+  [COMMAND_IDS.choosePrimaryWorkspace]: 'DSH: Choose Primary Workspace'
 };
 
 let statusBarItem: vscode.StatusBarItem | undefined;
+let remoteWarningShown = false;
 
 /**
  * DSH-рантайм воркспейса (#021). Создаётся при активации (без спавна) и
@@ -185,6 +193,19 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       onStateChanged: (state) => {
         updateStatusBarRuntime(state);
+        if (state === 'running' && !remoteWarningShown) {
+          const kind = remoteKind(vscode.env?.remoteName);
+          if (kind !== 'local') {
+            const status = checkRemoteRuntime({
+              remoteName: vscode.env?.remoteName,
+              version: dshRuntime?.version.dsh
+            });
+            if (status.kind !== 'ok') {
+              remoteWarningShown = true;
+              void vscode.window.showWarningMessage?.(status.instructions);
+            }
+          }
+        }
       }
     });
   }
@@ -222,12 +243,18 @@ function detectLocale(): 'ru' | 'en' {
 }
 
 /** Имя открытой папки (или имя workspace) для статус-бара. */
-function workspaceName(): string {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder !== undefined) {
-    return folder.name;
+/** Primary multi-root: настройка `dsh.primaryWorkspace`, иначе первая папка. */
+export function primaryWorkspaceName(): string | undefined {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
+    return undefined;
   }
-  return vscode.workspace.name ?? 'no workspace';
+  const configured = vscode.workspace.getConfiguration('dsh').get<string>('primaryWorkspace');
+  return folders.find((folder) => folder.name === configured)?.name ?? folders[0]?.name;
+}
+
+function workspaceName(): string {
+  return primaryWorkspaceName() ?? vscode.workspace.name ?? 'no workspace';
 }
 
 /**
@@ -263,6 +290,26 @@ function updateStatusBar(): void {
 }
 
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.choosePrimaryWorkspace) {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length < 2) {
+      await vscode.window.showInformationMessage(
+        'DSH: multi-root не открыт — primary совпадает с единственной папкой.'
+      );
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      folders.map((folder) => folder.name),
+      { placeHolder: 'Primary воркспейс DSH' }
+    );
+    if (picked !== undefined) {
+      await vscode.workspace
+        .getConfiguration('dsh')
+        .update('primaryWorkspace', picked, vscode.ConfigurationTarget.Workspace);
+      updateStatusBar();
+    }
+    return;
+  }
   if (command === COMMAND_IDS.openSettings) {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'dsh');
     return;
@@ -283,7 +330,10 @@ async function pruneWorkspaces(): Promise<void> {
 
   const options: { registryDir?: string; keepDays?: number } = {};
   if (typeof registryDirectory === 'string' && registryDirectory.trim() !== '') {
-    options.registryDir = registryDirectory;
+    options.registryDir = translateWorkspacePath(registryDirectory, {
+      remoteName: vscode.env?.remoteName,
+      platform: process.platform
+    });
   }
   if (typeof keepDays === 'number' && Number.isFinite(keepDays)) {
     options.keepDays = keepDays;

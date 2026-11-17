@@ -43,6 +43,11 @@ export interface ResolveOptions {
   readonly workspaceFile?: string | undefined;
   /** Платформа для нормализации путей (по умолчанию `process.platform`). */
   readonly platform?: NodeJS.Platform | undefined;
+  /**
+   * Primary-папка multi-root: имя папки или канонический путь. Неизвестное
+   * значение детерминированно игнорируется (primary — минимальный index).
+   */
+  readonly primaryFolder?: string | undefined;
 }
 
 /** Папка после канонизации. */
@@ -93,11 +98,16 @@ export async function resolveWorkspace(
 
   const platform = options.platform ?? process.platform;
   const remote = normalizeRemoteName(options.remoteName);
-  const resolvedFolders = await Promise.all(
-    folders.map((folder) => resolveFolder(folder, platform))
-  );
+  const resolvedFolders = (
+    await Promise.all(folders.map((folder) => resolveFolder(folder, platform)))
+  ).sort((left, right) => left.index - right.index);
 
-  const primary = resolvedFolders[0];
+  const primary =
+    resolvedFolders.find(
+      (folder) =>
+        options.primaryFolder !== undefined &&
+        (folder.name === options.primaryFolder || folder.path === options.primaryFolder)
+    ) ?? resolvedFolders[0];
   if (primary === undefined) {
     return null;
   }
