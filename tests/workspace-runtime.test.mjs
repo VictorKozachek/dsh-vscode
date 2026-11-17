@@ -24,7 +24,7 @@ async function makeFolder(name) {
   return { id: name.repeat(16).slice(0, 16), path: dir };
 }
 
-function createRuntime(folder, registry, posts) {
+function createRuntime(folder, registry, posts, extra = {}) {
   return new DshWorkspaceRuntime({
     folder,
     memento,
@@ -39,7 +39,8 @@ function createRuntime(folder, registry, posts) {
       posts.push(message);
     },
     isActive: () => true,
-    runtimeOptions: { shutdownGraceMs: 500 }
+    runtimeOptions: { shutdownGraceMs: 500 },
+    ...extra
   });
 }
 
@@ -47,17 +48,23 @@ test('A→B→A на реальном DshBridge: grace, processCount, teardown',
   const registry = new WorkspaceRegistry({ registryDir: path.join(tmpRoot, 'registry') });
   const folderA = await makeFolder('a');
   const folderB = await makeFolder('b');
-  const posts = [];
+  const postsByFolder = new Map();
   const runtimes = new Map();
+  let lifecycleRef;
   const lifecycle = new WorkspaceLifecycle({
     createRuntime: async (folder) => {
-      const runtime = createRuntime(folder, registry, posts);
+      const own = [];
+      postsByFolder.set(folder.id, own);
+      const runtime = createRuntime(folder, registry, own, {
+        isActive: () => lifecycleRef?.acceptsEvent(folder.id) ?? false
+      });
       runtimes.set(folder.id, runtime);
       return runtime;
     },
     graceMs: 250,
     debounceMs: 0
   });
+  lifecycleRef = lifecycle;
 
   try {
     await lifecycle.activate(folderA);
@@ -70,6 +77,14 @@ test('A→B→A на реальном DshBridge: grace, processCount, teardown',
 
     await lifecycle.activate(folderB);
     assert.equal(runtimeA.processCount, 1, 'A жив в grace');
+    const postsABefore = postsByFolder.get('a'.repeat(16)).length;
+    runtimeA.chat.syncNow();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(
+      postsByFolder.get('a'.repeat(16)).length,
+      postsABefore,
+      'старый A не постит после switch на B'
+    );
     const runtimeB = runtimes.get('b'.repeat(16));
     assert.equal(runtimeB.processCount, 1, 'процесс B поднят');
 
@@ -103,4 +118,89 @@ test('sandbox валидируется: неизвестное значение 
   assert.equal(parseSandbox(undefined), 'workspace-write');
   assert.equal(parseSandbox('read-only'), 'read-only');
   assert.equal(parseSandbox('danger-full-access'), 'danger-full-access');
+});
+
+
+test('lifecycle: ACP permission → ApprovalBroker → карточка и ответ ACP', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const logFile = path.join(tmpRoot, `permission-${String(Date.now())}.log`);
+  const registry = new WorkspaceRegistry({ registryDir: path.join(tmpRoot, 'registry-perm') });
+  const folder = await makeFolder('perm');
+  const posts = [];
+  const runtime = createRuntime(folder, registry, posts, {
+    approvalPolicy: 'ask',
+    isActive: () => true,
+    runtimeOptions: {
+      shutdownGraceMs: 500,
+      env: {
+        ...process.env,
+        FAKE_ACP_PERMISSION: '1',
+        FAKE_ACP_LOG: logFile
+      }
+    }
+  });
+
+  await runtime.sessions.create({ title: 'perm' });
+  const approvals = [];
+  const originalPost = posts.push.bind(posts);
+  posts.push = (message) => {
+    approvals.push(message);
+    return originalPost(message);
+  };
+
+  const sessionId = runtime.sessions.state.sessionId;
+  const turn = await runtime.acpRuntime.request('turn.start', {
+    sessionId,
+    input: 'запиши'
+  });
+  assert.ok(turn.turnId);
+
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !approvals.some((m) => m.type === 'approvalRequest')) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const card = approvals.find((m) => m.type === 'approvalRequest');
+  assert.ok(card, 'approvalRequest пришёл в UI');
+  assert.equal(card.request.tool, 'write_file');
+
+  assert.equal(runtime.approvals.resolve(card.request.id, 'allow'), true);
+  const logDeadline = Date.now() + 5000;
+  let text = '';
+  while (Date.now() < logDeadline) {
+    try {
+      text = await readFile(logFile, 'utf8');
+    } catch {
+      text = '';
+    }
+    if (text.includes('response:900')) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.match(text, /response:900:.*selected/s);
+  await runtime.dispose();
+  registry.dispose?.();
+});
+
+
+test('ChatSessionsPort отдаёт model/preset в chatSession', async () => {
+  const registry = new WorkspaceRegistry({ registryDir: path.join(tmpRoot, 'registry-models') });
+  const folder = await makeFolder('models');
+  const posts = [];
+  const runtime = createRuntime(folder, registry, posts, {
+    defaultModel: 'deepseek-v4',
+    defaultPreset: 'worker'
+  });
+  try {
+    await runtime.sessions.create({ title: 'm' });
+    runtime.chat.syncNow();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const sessionMessage = posts.filter((message) => message.type === 'chatSession').at(-1);
+    assert.ok(sessionMessage, 'chatSession отправлен');
+    assert.equal(sessionMessage.session.model, 'deepseek-v4');
+    assert.equal(sessionMessage.session.preset, 'worker');
+  } finally {
+    await runtime.dispose();
+    registry.dispose?.();
+  }
 });

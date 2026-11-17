@@ -6,7 +6,11 @@
 
 import path from 'node:path';
 
-import { AcpRuntime, type AcpRuntimeOptions } from '../runtime/acpRuntime';
+import {
+  AcpRuntime,
+  type AcpRuntimeOptions,
+  type RuntimeState
+} from '../runtime/acpRuntime';
 import { ContextLoader } from '../context/contextLoader';
 import { ApprovalBroker } from '../approvals/approvalBroker';
 import { createNodePathProbe } from '../approvals/pathProbe';
@@ -40,6 +44,8 @@ export interface DshWorkspaceRuntimeOptions {
   readonly executablePath: string | undefined;
   readonly profile?: string | undefined;
   readonly homeDirectory?: string | undefined;
+  readonly defaultModel?: string | undefined;
+  readonly defaultPreset?: string | undefined;
   readonly approvalPolicy: string | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly log: (line: string) => void;
@@ -51,6 +57,8 @@ export interface DshWorkspaceRuntimeOptions {
   readonly isActive?: (() => boolean) | undefined;
   /** Подмена опций ACP-рантайма — для интеграционных тестов. */
   readonly runtimeOptions?: Partial<AcpRuntimeOptions> | undefined;
+  /** Состояние ACP-рантайма (статус-бар/версии #021). */
+  readonly onStateChanged?: ((state: RuntimeState) => void) | undefined;
 }
 
 /** Рантайм воркспейса с компонентами для UI. */
@@ -66,6 +74,9 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
   readonly #log: (line: string) => void;
   readonly #isActive: () => boolean;
   #contextPack: unknown;
+  #defaultModel: string | undefined;
+  #defaultPreset: string | undefined;
+  #approvalCounter = 0;
 
   constructor(options: DshWorkspaceRuntimeOptions) {
     const { folder } = options;
@@ -73,7 +84,38 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     this.workspacePath = folder.path;
     this.#log = options.log;
     this.#isActive = options.isActive ?? (() => true);
+    this.#defaultModel = options.defaultModel;
+    this.#defaultPreset = options.defaultPreset;
     const sandboxMode = parseSandbox(options.sandboxMode);
+
+    const workspaceRoot = options.workspaceRoot ?? folder.path;
+
+    // Подтверждения: ACP permission → ApprovalBroker → инлайн-карточка.
+    this.#approvals = new ApprovalBroker({
+      context: {
+        workspaceRoot,
+        sandboxMode,
+        policy: parsePolicy(options.approvalPolicy)
+      },
+      evaluate: evaluateApproval,
+      ui: {
+        ask: (request) => {
+          if (!this.#isActive()) {
+            // Событие старого воркспейса: карточку не показываем, отказ.
+            return Promise.resolve('deny');
+          }
+          void options.post({ type: 'approvalRequest', request });
+        }
+      },
+      audit: new AuditLog({ filePath: path.join(workspaceRoot, '.dsh', 'audit.log') }),
+      probePath: createNodePathProbe(),
+      onResolved: (request, decision) => {
+        if (this.#isActive()) {
+          void options.post({ type: 'approvalResolved', id: request.id, decision });
+        }
+      },
+      logger: options.log
+    });
 
     this.#bridge = new AcpRuntime({
       workspacePath: folder.path,
@@ -87,7 +129,30 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
         process.env['USERPROFILE'] ??
         '',
       logger: (line) => options.log(`[${folder.id}] ${line}`),
-      ...options.runtimeOptions
+      ...options.runtimeOptions,
+      ...(options.onStateChanged === undefined
+        ? {}
+        : { onStateChanged: options.onStateChanged }),
+      // Обработчик permission: политика/аудит #009 и ответ ACP.
+      permissionHandler: async ({ sessionId, tool, details }) => {
+        const optionsList = Array.isArray(details) ? details : [];
+        const firstOption = optionsList.find(
+          (item) => typeof item === 'object' && item !== null && 'optionId' in item
+        ) as { optionId?: unknown } | undefined;
+        const decision = await this.#approvals.request({
+          id: `acp-${String(this.#approvalCounter++)}`,
+          tool,
+          kind: inferToolKind(tool),
+          sessionId,
+          arguments: { details }
+        });
+        if (decision === 'allow' || decision === 'allow-session') {
+          const optionId =
+            typeof firstOption?.optionId === 'string' ? firstOption.optionId : 'allow';
+          return { optionId };
+        }
+        return 'cancelled';
+      }
     });
     this.#sessions = new SessionManager({
       workspaceId: folder.id,
@@ -101,7 +166,7 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     });
     this.#loader = new ContextLoader({ root: folder.path, logger: options.log });
 
-    // Чат: события неактивного воркспейса не должны доходить до UI.
+    // Чат: события/посты неактивного воркспейса не доходят до UI.
     const gatedBridge = {
       on: (event: string, listener: (payload: unknown) => void) =>
         this.#bridge.on(event as never, (payload: unknown) => {
@@ -117,30 +182,9 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
       sessions: this.#sessionsPort(),
       getSessionId: () => this.#sessions.state.sessionId,
       post: (message) => {
-        void options.post(message);
-      },
-      logger: options.log
-    });
-
-    const workspaceRoot = options.workspaceRoot ?? folder.path;
-    this.#approvals = new ApprovalBroker({
-      context: {
-        workspaceRoot,
-        sandboxMode,
-        policy: parsePolicy(options.approvalPolicy)
-      },
-      evaluate: evaluateApproval,
-      ui: {
-        // Карточка уходит в панель; решение приходит через
-        // `approvals.resolve(id, decision)` из WebView/фолбэка.
-        ask: (request) => {
-          void options.post({ type: 'approvalRequest', request });
+        if (this.#isActive()) {
+          void options.post(message);
         }
-      },
-      audit: new AuditLog({ filePath: path.join(workspaceRoot, '.dsh', 'audit.log') }),
-      probePath: createNodePathProbe(),
-      onResolved: (request, decision) => {
-        void options.post({ type: 'approvalResolved', id: request.id, decision });
       },
       logger: options.log
     });
@@ -169,6 +213,11 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
 
   get diff(): DiffController | undefined {
     return this.#diff;
+  }
+
+  /** ACP-рантайм воркспейса (для статус-бара/диагностики #021). */
+  get acpRuntime(): AcpRuntime {
+    return this.#bridge;
   }
 
   get contextPack(): unknown {
@@ -215,16 +264,36 @@ export class DshWorkspaceRuntime implements WorkspaceRuntime {
     const snapshot = (value: SessionSnapshot) => ({
       sessionId: value.sessionId,
       title: value.title,
-      status: value.status
+      status: value.status,
+      ...(this.#defaultModel === undefined ? {} : { model: this.#defaultModel }),
+      ...(this.#defaultPreset === undefined ? {} : { preset: this.#defaultPreset })
     });
     return {
       getSnapshot: () => snapshot(this.#sessions.state),
       getDraft: () => this.#sessions.getDraft(),
       setDraft: (text) => this.#sessions.setDraft(text),
       on: (event, listener) =>
-        this.#sessions.on(event, (value) => listener(snapshot(value)))
+        this.#sessions.on(event, (value) => {
+          if (this.#isActive()) {
+            listener(snapshot(value));
+          }
+        })
     };
   }
+}
+
+function inferToolKind(tool: string): 'read' | 'write' | 'execute' | 'network' {
+  const value = tool.toLowerCase();
+  if (/read|cat|view|grep|search/.test(value)) {
+    return 'read';
+  }
+  if (/http|fetch|curl|network|web/.test(value)) {
+    return 'network';
+  }
+  if (/run|exec|command|shell|bash/.test(value)) {
+    return 'execute';
+  }
+  return 'write';
 }
 
 /** Валидация sandbox: неизвестное значение → `workspace-write`. */

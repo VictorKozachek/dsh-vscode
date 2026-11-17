@@ -8,7 +8,7 @@
 
 import * as vscode from 'vscode';
 
-import type { AcpRuntimeOptions } from '../runtime/acpRuntime';
+import type { AcpRuntimeOptions, RuntimeState } from '../runtime/acpRuntime';
 import type { DiffEditorPort } from '../diff/diffController';
 import type { ExtensionMessage } from '../views/chatHtml';
 import { WorkspaceRegistry } from './registry';
@@ -41,6 +41,8 @@ export interface WorkspaceLifecycleHostOptions {
   readonly createDiffEditor?: (() => DiffEditorPort) | undefined;
   /** Подмена опций ACP-рантайма — интеграционные тесты. */
   readonly runtimeOptions?: Partial<AcpRuntimeOptions> | undefined;
+  /** Состояние ACP-рантайма активного воркспейса (статус-бар #021). */
+  readonly onRuntimeState?: ((state: RuntimeState) => void) | undefined;
 }
 
 /** Disposable lifecycle + асинхронная остановка (ждёт мост). */
@@ -88,6 +90,7 @@ export function registerWorkspaceLifecycle(
   const approvalPolicy = configuration.get<string>('approvalPolicy');
   const executablePath = configuration.get<string>('executablePath');
   const profile = configuration.get<string>('profile') ?? 'acp';
+  const defaultModel = configuration.get<string>('defaultModel');
   const registry = registryFromConfiguration();
   const runtimes = new Map<string, DshWorkspaceRuntime>();
   let disposed = false;
@@ -102,6 +105,7 @@ export function registerWorkspaceLifecycle(
         executablePath,
         profile,
         homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
+        ...(defaultModel === undefined ? {} : { defaultModel }),
         approvalPolicy,
         log: options.log,
         post: (message) => options.postMessage?.(message),
@@ -111,6 +115,9 @@ export function registerWorkspaceLifecycle(
         ...(options.runtimeOptions === undefined
           ? {}
           : { runtimeOptions: options.runtimeOptions }),
+        ...(options.onRuntimeState === undefined
+          ? {}
+          : { onStateChanged: options.onRuntimeState }),
         // События неактивного воркспейса отбрасываются (#011).
         isActive: () => lifecycle?.acceptsEvent(folder.id) ?? false
       });

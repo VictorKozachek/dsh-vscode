@@ -179,9 +179,17 @@ export function activate(context: vscode.ExtensionContext): void {
       setSessionManager(null);
       setDiffController(null);
       lastContextPack = undefined;
+      void dshRuntime?.dispose();
+      dshRuntime = undefined;
       return;
     }
     const runtime = handle.runtime;
+    // Статус/версии #021 — от активного lifecycle-рантайма, не от глобального.
+    if (dshRuntime !== runtime.acpRuntime) {
+      void dshRuntime?.dispose();
+      dshRuntime = runtime.acpRuntime;
+    }
+    updateStatusBarRuntime(runtime.acpRuntime.state);
     chatView.setChat(runtime.chat);
     chatView.setApprovals({
       resolve: (id, decision) => runtime.approvals.resolve(id, decision),
@@ -204,6 +212,7 @@ export function activate(context: vscode.ExtensionContext): void {
       log.appendLine(line);
     },
     onStatus: (state) => updateStatusBar(state),
+    onRuntimeState: (state) => updateStatusBarRuntime(state),
     postMessage: (message) => chatView.postMessage(message as ExtensionMessage),
     createDiffEditor: () => new VscodeDiffEditor(context),
     onRuntimeChange: (handle) => applyRuntimeHandle(handle)
