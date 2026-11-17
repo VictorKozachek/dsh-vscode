@@ -33,6 +33,13 @@
           "name": "Chat",
           "type": "webview",
           "contextualTitle": "DSH"
+        },
+        {
+          "id": "dsh.sessions",
+          "name": "Sessions",
+          "type": "tree",
+          "contextualTitle": "DSH",
+          "icon": "media/dsh.svg"
         }
       ]
     },
@@ -80,6 +87,48 @@
       {
         "command": "dsh.pruneWorkspaces",
         "title": "Prune Workspaces",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sessions.create",
+        "title": "Create Session",
+        "category": "DSH",
+        "icon": "$(add)"
+      },
+      {
+        "command": "dsh.sessions.refresh",
+        "title": "Refresh Sessions",
+        "category": "DSH",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "dsh.sessions.select",
+        "title": "Make Session Active",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sessions.resume",
+        "title": "Resume Session",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sessions.stop",
+        "title": "Stop Session",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sessions.rename",
+        "title": "Rename Session",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sessions.delete",
+        "title": "Delete Session",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sessions.openTranscript",
+        "title": "Open Transcript",
         "category": "DSH"
       },
       {
@@ -180,6 +229,59 @@
           "description": "Телеметрия (по умолчанию выключена)."
         }
       }
+    },
+    "viewsWelcome": [
+      {
+        "view": "dsh.sessions",
+        "contents": "Сессий нет — создайте первую.\n[Создать сессию](command:dsh.sessions.create)",
+        "when": "dsh.sessions.empty"
+      },
+      {
+        "view": "dsh.sessions",
+        "contents": "Рантайм DSH недоступен. [Повторить](command:dsh.sessions.refresh) · [Настройки](command:dsh.openSettings)",
+        "when": "dsh.sessions.error"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "dsh.sessions.create",
+          "when": "view == dsh.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.sessions.refresh",
+          "when": "view == dsh.sessions",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "dsh.sessions.resume",
+          "when": "view == dsh.sessions && viewItem == dshSession",
+          "group": "inline@1"
+        },
+        {
+          "command": "dsh.sessions.stop",
+          "when": "view == dsh.sessions && viewItem == dshSession.active",
+          "group": "inline@2"
+        },
+        {
+          "command": "dsh.sessions.rename",
+          "when": "view == dsh.sessions && viewItem =~ /^dshSession/",
+          "group": "1_edit@1"
+        },
+        {
+          "command": "dsh.sessions.openTranscript",
+          "when": "view == dsh.sessions && viewItem =~ /^dshSession/",
+          "group": "2_open@1"
+        },
+        {
+          "command": "dsh.sessions.delete",
+          "when": "view == dsh.sessions && viewItem =~ /^dshSession/",
+          "group": "9_danger@1"
+        }
+      ]
     }
   },
   "scripts": {

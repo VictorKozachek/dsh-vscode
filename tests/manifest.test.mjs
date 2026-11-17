@@ -29,6 +29,15 @@ const expectedCommands = {
  */
 const extraCommands = {
   'dsh.pruneWorkspaces': 'DSH: Prune Workspaces',
+  // #022: панель Sessions и её действия.
+  'dsh.sessions.create': 'DSH: Create Session',
+  'dsh.sessions.refresh': 'DSH: Refresh Sessions',
+  'dsh.sessions.select': 'DSH: Make Session Active',
+  'dsh.sessions.resume': 'DSH: Resume Session',
+  'dsh.sessions.stop': 'DSH: Stop Session',
+  'dsh.sessions.rename': 'DSH: Rename Session',
+  'dsh.sessions.delete': 'DSH: Delete Session',
+  'dsh.sessions.openTranscript': 'DSH: Open Transcript',
   // #010: откат последней правки DiffService.
   'dsh.revertLastEdit': 'DSH: Revert Last Edit'
 };

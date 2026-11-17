@@ -184,7 +184,27 @@ test('манифест: контейнер DSH в activity bar и view dsh.chat'
   assert.ok(await stat(path.join(repoRoot, 'extension', container.icon)), 'иконка контейнера существует');
 
   const views = manifest.contributes.views.dsh;
-  assert.equal(views.length, 1);
-  assert.equal(views[0].id, 'dsh.chat');
-  assert.equal(views[0].type, 'webview');
+  assert.deepEqual(
+    views.map((view) => view.id).sort(),
+    ['dsh.chat', 'dsh.sessions'],
+    'в контейнере DSH чат и список сессий (#022)'
+  );
+  const chat = views.find((view) => view.id === 'dsh.chat');
+  assert.equal(chat.type, 'webview');
+  const sessions = views.find((view) => view.id === 'dsh.sessions');
+  assert.equal(sessions.type, 'tree');
+  assert.equal(sessions.name, 'Sessions');
+  assert.equal(sessions.icon, 'media/dsh.svg');
+
+  const commands = manifest.contributes.commands;
+  const create = commands.find((command) => command.command === 'dsh.sessions.create');
+  const refresh = commands.find((command) => command.command === 'dsh.sessions.refresh');
+  assert.equal(create.icon, '$(add)');
+  assert.equal(refresh.icon, '$(refresh)');
+
+  const welcome = manifest.contributes.viewsWelcome.find(
+    (entry) => entry.view === 'dsh.sessions' && entry.when === 'dsh.sessions.error'
+  );
+  assert.ok(welcome, 'viewsWelcome для ошибки есть');
+  assert.match(welcome.contents, /dsh\.openSettings/);
 });
