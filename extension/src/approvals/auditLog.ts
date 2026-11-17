@@ -7,13 +7,13 @@
  * `tests/approvals-audit.test.mjs`).
  */
 
-import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ApprovalDecision, ToolKind } from './approvalPolicy';
 
 /** Откуда взялось решение. */
-export type AuditSource = 'policy' | 'user' | 'session' | 'dispose' | 'timeout';
+export type AuditSource = 'policy' | 'user' | 'session' | 'dispose';
 
 /** Одна запись аудита. */
 export interface AuditEntry {
@@ -51,16 +51,26 @@ export function sanitizeForAudit(value: unknown, depth = 0): unknown {
     return '[too deep]';
   }
   if (typeof value === 'string') {
-    // userinfo из URL не пишется; query вырезается только у URL-подобных строк,
-    // а в произвольном тексте (например, reason) чистятся лишь секретные
-    // query-параметры — обычный «?» не теряет хвост.
-    const withoutCredentials = value.replace(/(\/\/)[^/@\s]+@/g, '$1');
-    const withoutUrlQuery = withoutCredentials.replace(
-      /([a-z][a-z0-9+.-]*:\/\/[^\s?#]*)\?[^\s#]*/gi,
-      '$1'
+    let result = value.replace(/(\/\/)[^/@\s]+@/g, '$1');
+    // Заголовки авторизации в свободном тексте (curl -H "Authorization: ...").
+    result = result.replace(
+      /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]+/gi,
+      '$1 [redacted]'
     );
-    return withoutUrlQuery.replace(
-      /([?&](?:token|access_token|api_key|key|secret)=)[^&\s]+/gi,
+    // Параметры key=value/secret: ... в любом месте строки, не только в query.
+    result = result.replace(
+      /(\b[A-Za-z0-9_]*(?:password|passwd|pwd|token|access_token|api[_-]?key|secret|authorization)[A-Za-z0-9_]*)\s*[:=]\s*"?[^\s",;]+"?/gi,
+      '$1=[redacted]'
+    );
+    // PEM/приватные ключи целиком.
+    result = result.replace(
+      /-----BEGIN[^-]+-----([\s\S]*?)-----END[^-]+-----/g,
+      '[redacted-key]'
+    );
+    // query у URL-подобных строк и секретные query-параметры.
+    result = result.replace(/([a-z][a-z0-9+.-]*:\/\/[^\s?#]*)\?[^\s#]*/gi, '$1');
+    return result.replace(
+      /([?&](?:token|access_token|api_key|key|secret|password)=)[^&\s]+/gi,
       '$1[redacted]'
     );
   }
@@ -115,8 +125,8 @@ export class AuditLog {
   #normalize(entry: AuditEntry): Record<string, unknown> {
     const normalized: Record<string, unknown> = {
       timestamp: entry.timestamp,
-      sessionId: entry.sessionId,
-      tool: entry.tool,
+      sessionId: sanitizeForAudit(entry.sessionId),
+      tool: sanitizeForAudit(entry.tool),
       kind: entry.kind,
       decision: entry.decision,
       source: entry.source
@@ -138,6 +148,13 @@ export class AuditLog {
     await mkdir(path.dirname(this.#filePath), { recursive: true, mode: 0o700 });
     await this.#rotateIfNeeded(Buffer.byteLength(line));
     await appendFile(this.#filePath, line, { encoding: 'utf8', mode: 0o600 });
+    // mode у appendFile применяется только при создании: ужесточаем права
+    // существующего журнала (0644 → 0600).
+    try {
+      await chmod(this.#filePath, 0o600);
+    } catch {
+      // журнал мог быть удалён ротацией — не критично
+    }
   }
 
   async #rotateIfNeeded(incomingBytes: number): Promise<void> {

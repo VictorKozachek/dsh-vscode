@@ -141,3 +141,40 @@ test('sanitizeForAudit: вырезает секретные ключи и кре
     link: 'ssh://host/x'
   });
 });
+
+test('аудит: секреты в свободном тексте, tool/sessionId и PEM маскируются', async () => {
+  const log = new AuditLog({ filePath: filePath('free-text-secrets') });
+  await log.record(
+    entry({
+      sessionId: 'sess?token=SESS-SECRET',
+      tool: 'curl -H "Authorization: Bearer TOOL-SECRET" https://x',
+      arguments: {
+        command: 'curl -H "Authorization: Bearer sk-SECRET-123" https://api.example.com',
+        env: 'DB_PASSWORD=hunter2',
+        pem: '-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----',
+        data: 'password=hunter3 token=hunter4'
+      }
+    })
+  );
+
+  const text = await readFile(log.filePath, 'utf8');
+  for (const secret of ['sk-SECRET-123', 'hunter2', 'hunter3', 'hunter4', 'MIIE', 'SESS-SECRET', 'TOOL-SECRET']) {
+    assert.ok(!text.includes(secret), `секрет ${secret} не должен попасть в журнал`);
+  }
+  assert.ok(text.includes('[redacted]'));
+  assert.ok(text.includes('[redacted-key]'));
+});
+
+test('аудит: существующий журнал ужесточается до 0600', async () => {
+  const { chmod, stat } = await import('node:fs/promises');
+  const target = filePath('mode');
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(path.dirname(target), { recursive: true });
+  await (await import('node:fs/promises')).writeFile(target, '{"old":true}\n', { mode: 0o644 });
+  await chmod(target, 0o644);
+
+  const log = new AuditLog({ filePath: target });
+  await log.record(entry());
+  const mode = (await stat(target)).mode & 0o777;
+  assert.equal(mode, 0o600);
+});

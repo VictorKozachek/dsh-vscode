@@ -149,7 +149,7 @@ export class ApprovalBroker {
     if (pending === undefined) {
       return false;
     }
-    pending.settle(decision, 'user');
+    void pending.settle(decision, 'user');
     return true;
   }
 
@@ -171,7 +171,7 @@ export class ApprovalBroker {
     this.#disposed = true;
     for (const [id, pending] of [...this.#pending]) {
       this.#pending.delete(id);
-      pending.settle('deny', 'dispose', 'брокер подтверждений закрыт');
+      void pending.settle('deny', 'dispose', 'брокер подтверждений закрыт');
     }
   }
 
@@ -262,7 +262,11 @@ export class ApprovalBroker {
   async #askUser(request: ApprovalRequestDto, reason: string | null): Promise<ApprovalDecision> {
     return new Promise<ApprovalDecision>((resolveDecision) => {
       let settled = false;
-      const settle = (decision: ApprovalDecision, source: AuditSource, settleReason?: string): void => {
+      const settle = async (
+        decision: ApprovalDecision,
+        source: AuditSource,
+        settleReason?: string
+      ): Promise<void> => {
         if (settled) {
           return;
         }
@@ -271,7 +275,9 @@ export class ApprovalBroker {
         if (decision === 'allow-session') {
           this.#sessionAllowed.add(sessionKey(request.sessionId, request.tool));
         }
-        void this.#record({
+        // Аудит пишем до разрешения запроса: вызывающий видит уже записанное
+        // решение (иначе файл после await request может быть пуст).
+        await this.#record({
           timestamp: this.#now(),
           sessionId: request.sessionId,
           tool: request.tool,
@@ -295,17 +301,17 @@ export class ApprovalBroker {
       try {
         const answer = this.#options.ui.ask(request);
         if (answer !== undefined) {
-          answer.then(
-            (decision) => {
-              settle(decision, 'user');
+          void answer.then(
+            async (decision) => {
+              await settle(decision, 'user');
             },
-            (error: unknown) => {
-              settle('deny', 'user', error instanceof Error ? error.message : 'ошибка UI подтверждения');
+            async (error: unknown) => {
+              await settle('deny', 'user', error instanceof Error ? error.message : 'ошибка UI подтверждения');
             }
           );
         }
       } catch (error) {
-        settle('deny', 'user', error instanceof Error ? error.message : String(error));
+        void settle('deny', 'user', error instanceof Error ? error.message : String(error));
       }
     });
   }

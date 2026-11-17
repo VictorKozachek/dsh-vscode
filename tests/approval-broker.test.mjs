@@ -487,3 +487,27 @@ test('probePath вызывается для target и предка', async () =>
   assert.ok(calls.includes('/repo/newdir'), 'предок проверен');
   broker.dispose();
 });
+
+test('аудит записан до разрешения request (файл читается сразу)', async () => {
+  const { mkdtemp, readFile, realpath } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const nodePath = await import('node:path');
+  const { AuditLog } = await import('../extension/src/approvals/auditLog.ts');
+  const dir = await realpath(await mkdtemp(nodePath.join(os.tmpdir(), 'dsh-audit-file-')));
+  const audit = new AuditLog({ filePath: nodePath.join(dir, '.dsh', 'audit.log') });
+
+  const broker = new ApprovalBroker({
+    context: { workspaceRoot: ROOT, sandboxMode: 'workspace-write', policy: 'ask' },
+    evaluate: evaluateApproval,
+    ui: { ask: () => Promise.resolve('allow') },
+    audit
+  });
+  const decision = await broker.request(
+    writeRequest({ id: 'audit-now', tool: 'run_command', kind: 'execute', targetPath: `${ROOT}/a.sh` })
+  );
+  assert.equal(decision, 'allow');
+
+  const text = await readFile(nodePath.join(dir, '.dsh', 'audit.log'), 'utf8');
+  assert.match(text, /"decision":"allow"/);
+  broker.dispose();
+});
