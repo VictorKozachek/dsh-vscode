@@ -287,3 +287,40 @@ test('горячий путь: резолвер не запускает проц
   assert.doesNotMatch(source, /require\(\s*['"](?:node:)?child_process['"]\s*\)/);
   assert.doesNotMatch(source, /(?<![.\w])(?:spawn|execFile|execSync|fork)\s*\(/);
 });
+
+test('multi-root: primary детерминирован по index, override по имени/пути', async () => {
+  const first = await makeCase('mr-first');
+  const second = await makeCase('mr-second');
+
+  const workspace = await resolveWorkspace(
+    [
+      { uri: { fsPath: second }, name: 'second', index: 1 },
+      { uri: { fsPath: first }, name: 'first', index: 0 }
+    ],
+    { primaryFolder: 'second' }
+  );
+  assert.ok(workspace);
+  assert.equal(workspace.multiRoot, true);
+  assert.equal(workspace.primary.path, second);
+  assert.deepEqual(workspace.folders.map((item) => item.index), [0, 1]);
+
+  const byPath = await resolveWorkspace(
+    [
+      { uri: { fsPath: second }, name: 'second', index: 1 },
+      { uri: { fsPath: first }, name: 'first', index: 0 }
+    ],
+    { primaryFolder: first }
+  );
+  assert.ok(byPath);
+  assert.equal(byPath.primary.path, first);
+
+  const unknown = await resolveWorkspace(
+    [
+      { uri: { fsPath: second }, name: 'second', index: 1 },
+      { uri: { fsPath: first }, name: 'first', index: 0 }
+    ],
+    { primaryFolder: 'missing' }
+  );
+  assert.ok(unknown);
+  assert.equal(unknown.primary.path, first, 'неизвестный override → минимальный index');
+});
