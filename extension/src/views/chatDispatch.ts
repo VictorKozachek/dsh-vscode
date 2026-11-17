@@ -18,6 +18,19 @@ export interface ChatDispatchSessionPort {
   ): ExtensionMessage[];
 }
 
+/** Порт формы New Session (#023). */
+export interface NewSessionDispatchPort {
+  submit(values: {
+    readonly preset: string;
+    readonly model: string;
+    readonly sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+    readonly approval: 'ask' | 'auto' | 'never';
+    readonly title: string;
+    readonly confirmDanger: boolean;
+  }): void | Promise<void>;
+  cancel(): void;
+}
+
 /** Порт брокера подтверждений (#009): решения из инлайн-карточки. */
 export interface ApprovalDispatchPort {
   resolve(id: string, decision: 'allow' | 'allow-session' | 'deny'): boolean;
@@ -39,6 +52,8 @@ export interface ChatDispatchOptions {
   readonly state: () => Omit<ChatPanelStateDto, 'status'>;
   readonly post: (message: ExtensionMessage) => Promise<void> | void;
   readonly log?: ((line: string) => void) | undefined;
+  /** Форма New Session (#023). */
+  readonly newSession?: NewSessionDispatchPort | undefined;
   /** Брокер подтверждений (#009); без него approval-сообщения игнорируются. */
   readonly approvals?: ApprovalDispatchPort | undefined;
   /** Привязка чата к сессии (#024). */
@@ -62,6 +77,15 @@ export async function dispatchWebviewMessage(
   const emit = (outgoing: ExtensionMessage): void => {
     void post(outgoing);
   };
+
+  if (message.kind === 'newSessionSubmit') {
+    await options.newSession?.submit(message.values);
+    return;
+  }
+  if (message.kind === 'newSessionCancel') {
+    options.newSession?.cancel();
+    return;
+  }
 
   // Инлайн-подтверждения (#009): решение из карточки уходит в брокер.
   if (message.kind === 'approvalResolve') {
