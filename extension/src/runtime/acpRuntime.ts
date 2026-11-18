@@ -142,6 +142,42 @@ const DEFAULT_RESTART_MAX_MS = 10_000;
 const DEFAULT_MAX_RESTART_ATTEMPTS = 5;
 const DEFAULT_RESTART_STABLE_MS = 30_000;
 
+/** PATH для spawn: каталог текущего Node в начале, остальной PATH сохранён. */
+export function buildSpawnEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  execPath: string = process.execPath
+): NodeJS.ProcessEnv {
+  const nodeDirectory = path.dirname(execPath);
+  const separator = process.platform === 'win32' ? ';' : ':';
+  const existing = baseEnv['PATH'] ?? '';
+  const parts = existing.split(separator).filter((part) => part !== '');
+  if (!parts.includes(nodeDirectory)) {
+    parts.unshift(nodeDirectory);
+  }
+  return { ...baseEnv, PATH: parts.join(separator) };
+}
+
+/** Скрипт с shebang `#!/usr/bin/env node`. */
+export async function isEnvNodeScript(command: string): Promise<boolean> {
+  if (command === 'npx' || command === 'node') {
+    return false;
+  }
+  try {
+    const content = await readFile(command, 'utf8');
+    const firstLine = content.split('\n', 1)[0] ?? '';
+    return firstLine.startsWith('#!') && /\benv\s+node\b/.test(firstLine);
+  } catch {
+    return false;
+  }
+}
+
+function hasNodeOnPath(baseEnv: NodeJS.ProcessEnv): boolean {
+  const separator = process.platform === 'win32' ? ';' : ':';
+  return (baseEnv['PATH'] ?? '')
+    .split(separator)
+    .some((directory) => directory !== '' && /node(\.exe)?$/i.test(directory));
+}
+
 /**
  * Рантайм DSH поверх ACP stdio. Реализует порт `DshBridgePort` (#004/#007).
  */
@@ -452,14 +488,27 @@ export class AcpRuntime {
     this.#log(`ACP: запуск ${command.displayPath} (${command.source})`);
 
     const isScript = command.command === 'npx' ? false : /\.[cm]?js$/i.test(command.command);
-    const executable = isScript ? process.execPath : command.command;
-    const args = isScript ? [command.command, ...command.args] : [...command.args];
+    const baseEnv = this.#options.env ?? process.env;
+    const spawnEnv = buildSpawnEnvironment(baseEnv);
+    const envNode = isScript ? false : await isEnvNodeScript(command.command);
+    // GUI-запуск VS Code часто не имеет node в PATH: при env-node shebang и
+    // отсутствии node запускаем скрипт текущим process.execPath (fallback).
+    const nodeFallback = envNode && !hasNodeOnPath(baseEnv);
+    const executable = isScript || nodeFallback ? process.execPath : command.command;
+    const args = nodeFallback
+      ? [command.command, ...command.args]
+      : isScript
+        ? [command.command, ...command.args]
+        : [...command.args];
+    this.#log(
+      `ACP: node ${process.execPath}; PATH ${spawnEnv['PATH'] ?? ''}${nodeFallback ? ' (fallback env node → process.execPath)' : ''}`
+    );
 
     let child: ChildProcess;
     try {
       child = spawn(executable, args, {
         cwd: this.#workspacePath,
-        env: this.#options.env ?? process.env,
+        env: spawnEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         // На POSIX — своя группа процессов: stop() гасит и внуков (npx и т.п.).
@@ -539,6 +588,11 @@ export class AcpRuntime {
   }
 
   #handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (code === 127) {
+      this.#log(
+        'ACP: код 127 — dsh не смог найти node (env node). Проверьте PATH или укажите путь к node/dsh в dsh.executablePath.'
+      );
+    }
     const wasStopping = this.#stopping;
     const uptime = this.#startedAt === 0 ? 0 : Date.now() - this.#startedAt;
     this.#startedAt = 0;
