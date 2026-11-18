@@ -63,6 +63,13 @@
 | 028 | Автономный рантайм (bundled/download) | 021 | `extension/src/runtime/*`, `extension/package.json` |
 | 029 | Онбординг: детект DSH и выбор рантайма | 021, 028 | `extension/src/onboarding/` |
 | 030 | Синхронизация воркспейса и индикатор | 025, 029 | `extension/src/workspace/sync*` |
+| 031 | Fix: запуск dsh без PATH GUI (env node) | 021 | `extension/src/runtime/*`, `bridge/*` |
+| 032 | Большой чат отдельной панелью (Beside) | 008, 024 | `extension/src/views/chatPanel*`, `webview/src/chat/` |
+| 033 | Правая панель: DSH в Secondary Sidebar | 022 | `extension/package.json`, `extension/src/views/*` |
+| 034 | Live sync сообщений приложение ↔ VS Code | 025, 030 | `extension/src/sync/*` |
+| 035 | Канбан-плагин в acp-профиле | 029 | `docs/*` |
+| 036 | Kanban-доска в VS Code + статус плагина | 014 | `webview/src/kanban/`, `extension/src/views/kanban*` |
+| 037 | Kanban: действия и свой диспетчер без плагина | 036, 035 | `extension/src/views/kanban*`, `extension/src/kanban/*` |
 
 ## Критерии готовности задачи (Definition of Done)
 
