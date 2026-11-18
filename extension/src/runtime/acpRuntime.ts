@@ -87,6 +87,9 @@ export interface AcpRuntimeOptions {
   /** Домашний каталог для поиска профиля (`~`). */
   readonly homeDirectory: string;
   readonly env?: NodeJS.ProcessEnv | undefined;
+  /** Для тестов/extension host: подмена process.execPath и Electron-режима. */
+  readonly processExecPath?: string | undefined;
+  readonly electronRuntime?: boolean | undefined;
   readonly logger?: ((line: string) => void) | undefined;
   readonly onStateChanged?: ((state: RuntimeState) => void) | undefined;
   /** Таймаут обычных запросов (initialize, session.*). */
@@ -145,8 +148,14 @@ const DEFAULT_RESTART_STABLE_MS = 30_000;
 /** PATH для spawn: каталог текущего Node в начале, остальной PATH сохранён. */
 export function buildSpawnEnvironment(
   baseEnv: NodeJS.ProcessEnv,
-  execPath: string = process.execPath
+  execPath: string = process.execPath,
+  electron: boolean = process.versions['electron'] !== undefined
 ): NodeJS.ProcessEnv {
+  // В extension host VS Code process.execPath — Electron/Code Helper, node в
+  // его каталоге нет; добавлять этот каталог в PATH бессмысленно (#031 review).
+  if (electron) {
+    return { ...baseEnv };
+  }
   const nodeDirectory = path.dirname(execPath);
   const separator = process.platform === 'win32' ? ';' : ':';
   const existing = baseEnv['PATH'] ?? '';
@@ -155,6 +164,43 @@ export function buildSpawnEnvironment(
     parts.unshift(nodeDirectory);
   }
   return { ...baseEnv, PATH: parts.join(separator) };
+}
+
+/** План spawn с учётом Electron: ELECTRON_RUN_AS_NODE=1 + process.execPath. */
+export interface SpawnPlan {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly fallback: boolean;
+}
+
+export function buildSpawnPlan(options: {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly baseEnv: NodeJS.ProcessEnv;
+  readonly execPath?: string | undefined;
+  readonly electron?: boolean | undefined;
+  readonly isScript?: boolean | undefined;
+  readonly envNode?: boolean | undefined;
+}): SpawnPlan {
+  const execPath = options.execPath ?? process.execPath;
+  const electron = options.electron ?? process.versions['electron'] !== undefined;
+  const env = buildSpawnEnvironment(options.baseEnv, execPath, electron);
+  const nodeOnPath = hasNodeOnPath(options.baseEnv);
+  const fallback = options.envNode === true && !nodeOnPath;
+  const useNode = options.isScript === true || fallback;
+  if (!useNode) {
+    return { executable: options.command, args: options.args, env, fallback: false };
+  }
+  if (electron) {
+    env['ELECTRON_RUN_AS_NODE'] = '1';
+  }
+  return {
+    executable: execPath,
+    args: [options.command, ...options.args],
+    env,
+    fallback
+  };
 }
 
 /** Скрипт с shebang `#!/usr/bin/env node`. */
@@ -489,26 +535,27 @@ export class AcpRuntime {
 
     const isScript = command.command === 'npx' ? false : /\.[cm]?js$/i.test(command.command);
     const baseEnv = this.#options.env ?? process.env;
-    const spawnEnv = buildSpawnEnvironment(baseEnv);
+    const execPath = this.#options.processExecPath ?? process.execPath;
+    const electron = this.#options.electronRuntime ?? process.versions['electron'] !== undefined;
     const envNode = isScript ? false : await isEnvNodeScript(command.command);
-    // GUI-запуск VS Code часто не имеет node в PATH: при env-node shebang и
-    // отсутствии node запускаем скрипт текущим process.execPath (fallback).
-    const nodeFallback = envNode && !hasNodeOnPath(baseEnv);
-    const executable = isScript || nodeFallback ? process.execPath : command.command;
-    const args = nodeFallback
-      ? [command.command, ...command.args]
-      : isScript
-        ? [command.command, ...command.args]
-        : [...command.args];
+    const plan = buildSpawnPlan({
+      command: command.command,
+      args: command.args,
+      baseEnv,
+      execPath,
+      electron,
+      isScript,
+      envNode
+    });
     this.#log(
-      `ACP: node ${process.execPath}; PATH ${spawnEnv['PATH'] ?? ''}${nodeFallback ? ' (fallback env node → process.execPath)' : ''}`
+      `ACP: node ${execPath} (${electron ? 'Electron, ELECTRON_RUN_AS_NODE=1' : 'node'}); PATH ${plan.env['PATH'] ?? ''}${plan.fallback ? ' (fallback env node → process.execPath)' : ''}`
     );
 
     let child: ChildProcess;
     try {
-      child = spawn(executable, args, {
+      child = spawn(plan.executable, [...plan.args], {
         cwd: this.#workspacePath,
-        env: spawnEnv,
+        env: plan.env,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         // На POSIX — своя группа процессов: stop() гасит и внуков (npx и т.п.).

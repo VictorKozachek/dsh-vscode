@@ -336,3 +336,57 @@ test('env -i PATH без node + env-node shebang: fallback через process.ex
   assert.ok(Array.isArray(list.sessions));
   await runtime.stop();
 });
+
+test('Electron: spawn plan использует process.execPath + ELECTRON_RUN_AS_NODE=1', async () => {
+  const { buildSpawnPlan } = await import('../extension/src/runtime/acpRuntime.ts');
+  const plan = buildSpawnPlan({
+    command: '/opt/homebrew/bin/dsh',
+    args: ['--profile', 'acp'],
+    baseEnv: { PATH: '/usr/bin:/bin' },
+    execPath: '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness',
+    electron: true,
+    isScript: false,
+    envNode: true
+  });
+  assert.equal(plan.executable, '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness');
+  assert.deepEqual([...plan.args], ['/opt/homebrew/bin/dsh', '--profile', 'acp']);
+  assert.equal(plan.env.ELECTRON_RUN_AS_NODE, '1');
+  assert.equal(plan.fallback, true);
+  assert.equal(plan.env.PATH, '/usr/bin:/bin', 'каталог Electron не добавляется в PATH');
+});
+
+test('реальный Electron (ELECTRON_RUN_AS_NODE=1) запускает env-node dsh без node в PATH', async (t) => {
+  const { existsSync } = await import('node:fs');
+  const electron = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness';
+  if (!existsSync(electron)) {
+    t.skip('Electron-бинарник недоступен в окружении');
+    return;
+  }
+  const { readFile, writeFile, chmod } = await import('node:fs/promises');
+  const fixture = await readFile(FIXTURE, 'utf8');
+  const script = path.join(tmpRoot, `dsh-electron-${String(Date.now())}`);
+  await writeFile(script, fixture);
+  await chmod(script, 0o755);
+
+  const workspace = await mkdtemp(path.join(tmpRoot, 'ws-electron-'));
+  const home = path.join(tmpRoot, 'home-electron');
+  const lines = [];
+  const runtime = new AcpRuntime({
+    workspacePath: workspace,
+    executablePath: script,
+    homeDirectory: home,
+    env: { PATH: '/usr/bin:/bin', HOME: home },
+    processExecPath: electron,
+    electronRuntime: true,
+    logger: (line) => lines.push(line),
+    requestTimeoutMs: 5000,
+    shutdownGraceMs: 2000,
+    discovery: { allowNpxFallback: false }
+  });
+  await runtime.start();
+  assert.equal(runtime.state, 'running', lines.join('\n'));
+  assert.match(lines.join('\n'), /Electron, ELECTRON_RUN_AS_NODE=1/);
+  const list = await runtime.request('session.list', { workspaceId: 'ws' });
+  assert.ok(Array.isArray(list.sessions));
+  await runtime.stop();
+});
