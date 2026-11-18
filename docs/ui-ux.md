@@ -25,7 +25,7 @@
 |---|---|
 | Header | имя сессии, бейдж пресета, модель, чип sandbox, кнопка Stop |
 | Feed | сообщения user/assistant; tool-call блоки (свёрнуты, статус, длительность, результат); diff-ссылки; streaming-каретка; автоскролл у нижней границы |
-| Composer | textarea (Enter — send, Shift+Enter — newline), кнопка Send, подсказка, вложения/выделение |
+| Composer | textarea (Enter — send, Shift+Enter — newline), кнопка **emoji**: поповер с поиском и категориями, вставка в позицию курсора; недавние; кнопка Send; подсказка; вложения/выделение |
 | Footer | статус (idle/streaming/cancelled/error), токены, длительность хода |
 
 Состояния: пустая («Nothing here yet» + подсказка), нет сессии (CTA «Создать сессию»), streaming, cancelled, error (баннер с повтором), offline (read-only).
@@ -89,8 +89,17 @@
 
 ## 8.1. Emoji и Unicode
 
-- Смайлы — обычный Unicode-текст: рендер не должен их вырезать (проверить
-  `escapeHtml`/markdown на `😀 🚀 ✅ ❌` и составные эмодзи 👨‍👩‍👧‍👦, флаги, skin tone).
+**Выбор смайла в composer** (запрос пользователя 18.11): кнопка 😊 рядом с Send
+открывает поповер:
+- поиск по названию (`smile`, `rocket`), категории (часто используемые, реакции,
+  статусы, объекты, символы), недавние (запоминаются в `workspaceState`);
+- вставка в позицию курсора, фокус возвращается в textarea, Enter не отправляет;
+- поддержка системного пикера (`Cmd+Ctrl+Space` на macOS) в textarea тоже
+  должна работать;
+- поповер закрывается по Esc и клику вне; навигация стрелками.
+
+**Рендер**: смайлы — обычный Unicode-текст, не вырезать (проверить
+`escapeHtml`/markdown на `😀 🚀 ✅ ❌` и составные эмодзи 👨‍👩‍👧‍👦, флаги, skin tone).
 - Шрифтовой стек с fallback: `var(--vscode-font-family), system-ui, -apple-system,
   "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`.
 - Моноширинный код — с эмодзи-fallback тем же списком.
