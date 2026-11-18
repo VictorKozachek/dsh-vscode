@@ -43,3 +43,6 @@ worktrees/
 # Кэш npm (сборка VSIX) и служебное состояние dsh-remote/kanban
 .npm-cache/
 .kanban/.watcher-resume.json
+
+# Локальный рантайм-обёртка для теста VSIX
+.dsh-runtime/
