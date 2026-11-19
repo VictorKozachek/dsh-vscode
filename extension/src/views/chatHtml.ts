@@ -93,6 +93,34 @@ export interface ChatSessionDto {
   readonly historyState: 'replayed' | 'empty' | 'unavailable';
 }
 
+/** Доска Kanban (#036). */
+export interface BoardCardDto {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly owner: string;
+  readonly branch: string;
+  readonly updated: string;
+  readonly inBranch: boolean;
+  readonly path: string;
+}
+export interface BoardColumnDto {
+  readonly status: string;
+  readonly label: string;
+  readonly cards: readonly BoardCardDto[];
+}
+export interface BoardPluginDto {
+  readonly installed: boolean;
+  readonly profile: string;
+  readonly installCommand: string;
+  readonly reason?: string | undefined;
+}
+export interface BoardDataDto {
+  readonly columns: readonly BoardColumnDto[];
+  readonly plugin: BoardPluginDto;
+  readonly empty: boolean;
+}
+
 /** Сообщения WebView → extension. */
 export type WebviewMessage =
   | { readonly kind: 'ready' }
@@ -105,7 +133,11 @@ export type WebviewMessage =
   | { readonly kind: 'draftChanged'; readonly text: string }
   | { readonly kind: 'openNewSession' }
   | { readonly kind: 'retryChat' }
-  | { readonly kind: 'settingsApply'; readonly values: Readonly<Record<string, unknown>> };
+  | { readonly kind: 'settingsApply'; readonly values: Readonly<Record<string, unknown>> }
+  | { readonly kind: 'boardRefresh' }
+  | { readonly kind: 'boardInstall' }
+  | { readonly kind: 'boardOpenCard'; readonly path: string }
+  | { readonly kind: 'boardCreate' };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
 export const WEBVIEW_MESSAGE_TYPES = [
@@ -119,7 +151,11 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'draftChanged',
   'openNewSession',
   'retryChat',
-  'settingsApply'
+  'settingsApply',
+  'boardRefresh',
+  'boardInstall',
+  'boardOpenCard',
+  'boardCreate'
 ] as const;
 
 /** Статус потока ответа в панели. */
@@ -183,7 +219,8 @@ export type ExtensionMessage =
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
   | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] }
-  | { readonly type: 'settingsOpen'; readonly values: Readonly<Record<string, unknown>> };
+  | { readonly type: 'settingsOpen'; readonly values: Readonly<Record<string, unknown>> }
+  | { readonly type: 'boardOpen'; readonly data: BoardDataDto };
 
 /**
  * Разбирает сообщение из WebView. Возвращает `null`, если сообщение не по
@@ -241,6 +278,19 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
       return null;
     }
     return { kind: 'settingsApply', values: values as Record<string, unknown> };
+  }
+  if (type === 'boardRefresh') {
+    return { kind: 'boardRefresh' };
+  }
+  if (type === 'boardInstall') {
+    return { kind: 'boardInstall' };
+  }
+  if (type === 'boardOpenCard') {
+    const filePath = typeof record['path'] === 'string' ? record['path'] : '';
+    return filePath === '' ? null : { kind: 'boardOpenCard', path: filePath };
+  }
+  if (type === 'boardCreate') {
+    return { kind: 'boardCreate' };
   }
   return null;
 }
@@ -466,7 +516,11 @@ export class ChatSession {
       message.kind === 'draftChanged' ||
       message.kind === 'openNewSession' ||
       message.kind === 'retryChat' ||
-      message.kind === 'settingsApply'
+      message.kind === 'settingsApply' ||
+      message.kind === 'boardRefresh' ||
+      message.kind === 'boardInstall' ||
+      message.kind === 'boardOpenCard' ||
+      message.kind === 'boardCreate'
     ) {
       return [];
     }

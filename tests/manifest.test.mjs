@@ -45,6 +45,7 @@ const extraCommands = {
   // #014: read-only Kanban-панель.
   'dsh.kanban.refresh': 'DSH: Refresh Kanban',
   'dsh.kanban.openCard': 'DSH: Open Kanban Card',
+  'dsh.kanban.openBoard': 'DSH: Открыть Kanban-доску',
   // #015: отправка диагностики агенту.
   'dsh.reportDiagnostics': 'DSH: Report Diagnostics'
 };

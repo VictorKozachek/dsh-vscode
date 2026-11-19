@@ -20,7 +20,8 @@ import type {
   ApprovalDispatchPort,
   ChatSessionDispatchPort,
   NewSessionDispatchPort,
-  SettingsDispatchPort
+  SettingsDispatchPort,
+  BoardDispatchPort
 } from './chatDispatch';
 import {
   ChatSession,
@@ -56,6 +57,8 @@ export interface ChatViewProviderOptions {
   readonly chatSession?: ChatSessionDispatchPort | undefined;
   /** Экран настроек dsh.* (#013). */
   readonly settings?: SettingsDispatchPort | undefined;
+  /** Доска Kanban (#036). */
+  readonly board?: BoardDispatchPort | undefined;
 }
 
 const MAX_MESSAGES = 200;
@@ -205,7 +208,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       newSession: this.#options.newSession,
       approvals: this.#approvals,
       chatSession: this.#chatSession,
-      settings: this.#options.settings
+      settings: this.#options.settings,
+      board: this.#options.board
     });
   }
 

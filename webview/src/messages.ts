@@ -73,7 +73,11 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'draftChanged',
   'openNewSession',
   'retryChat',
-  'settingsApply'
+  'settingsApply',
+  'boardRefresh',
+  'boardInstall',
+  'boardOpenCard',
+  'boardCreate'
 ] as const;
 
 /** Сообщения extension host → WebView. */
@@ -139,6 +143,33 @@ export interface ChatPanelState {
   readonly locale: 'ru' | 'en';
 }
 
+export interface BoardCardDto {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly owner: string;
+  readonly branch: string;
+  readonly updated: string;
+  readonly inBranch: boolean;
+  readonly path: string;
+}
+export interface BoardColumnDto {
+  readonly status: string;
+  readonly label: string;
+  readonly cards: readonly BoardCardDto[];
+}
+export interface BoardPluginDto {
+  readonly installed: boolean;
+  readonly profile: string;
+  readonly installCommand: string;
+  readonly reason?: string;
+}
+export interface BoardDataDto {
+  readonly columns: readonly BoardColumnDto[];
+  readonly plugin: BoardPluginDto;
+  readonly empty: boolean;
+}
+
 /** Сообщение из WebView в extension host. */
 export type WebviewToExtension =
   | { readonly type: 'ready' }
@@ -151,7 +182,11 @@ export type WebviewToExtension =
   | { readonly type: 'draftChanged'; readonly text: string }
   | { readonly type: 'openNewSession' }
   | { readonly type: 'retryChat' }
-  | { readonly type: 'settingsApply'; readonly values: Readonly<Record<string, unknown>> };
+  | { readonly type: 'settingsApply'; readonly values: Readonly<Record<string, unknown>> }
+  | { readonly type: 'boardRefresh' }
+  | { readonly type: 'boardInstall' }
+  | { readonly type: 'boardOpenCard'; readonly path: string }
+  | { readonly type: 'boardCreate' };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =

@@ -391,6 +391,7 @@ test('активация: все команды каркаса зарегист�
   const commandIds = [...state.commands.keys()].sort();
   assert.deepEqual(commandIds, [
     'dsh.choosePrimaryWorkspace',
+    'dsh.kanban.openBoard',
     'dsh.kanban.openCard',
     'dsh.kanban.refresh',
     'dsh.newSession',
@@ -910,4 +911,31 @@ test('Kanban: watcher с debounce обновляет колонки после �
   );
   await extension.deactivate();
   await rm(workspace, { recursive: true, force: true });
+});
+
+test('Kanban board: команда отдаёт колонки/статус плагина, install даёт команду', async () => {
+  const { fake, state } = createFakeVscode();
+  const extension = loadExtensionWithFakeVscode(fake);
+  extension.activate({
+    subscriptions: [],
+    extensionUri: { path: '/ext', fsPath: '/ext', toString: () => 'file:///ext' }
+  });
+  resolveChatView(state);
+
+  await state.commands.get('dsh.kanban.openBoard')();
+  await tick();
+  const open = state.webviewMessages.find((message) => message.type === 'boardOpen');
+  assert.ok(open, 'boardOpen отправлен');
+  assert.equal(open.data.columns.length, 8);
+  assert.equal(typeof open.data.plugin.installed, 'boolean');
+  assert.match(open.data.plugin.installCommand, /dsh plugin --profile .+ add/);
+
+  await state.webviewListeners.at(-1)({ type: 'boardInstall' });
+  for (let i = 0; i < 20 && !state.messages.some((m) => /Установите плагин/.test(m)); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(
+    state.messages.some((message) => /Установите плагин: dsh plugin/.test(message)),
+    `кнопка Установить показывает точную команду: ${JSON.stringify(state.messages)}`
+  );
 });
