@@ -282,6 +282,12 @@ function resolveChatView(state) {
     }
   };
   provider.resolveWebviewView(view);
+  // Настоящий webview присылает ready; без него provider держит сообщения в
+  // очереди (гонка resolve→ready, #036).
+  const listener = state.webviewListeners.at(-1);
+  if (typeof listener === 'function') {
+    void listener({ type: 'ready' });
+  }
   return view;
 }
 

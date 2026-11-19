@@ -59,6 +59,8 @@ export interface ChatViewProviderOptions {
   readonly settings?: SettingsDispatchPort | undefined;
   /** Доска Kanban (#036). */
   readonly board?: BoardDispatchPort | undefined;
+  /** Панель закрыта — сбросить host-флаги вроде boardVisible (#036). */
+  readonly onViewDisposed?: (() => void) | undefined;
 }
 
 const MAX_MESSAGES = 200;
@@ -78,6 +80,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   #chatSession: ChatSessionDispatchPort | undefined;
   /** Сообщения до resolve webview (boardOpen может прийти из команды). */
   readonly #pending: ExtensionMessage[] = [];
+  /** Webview готов принимать сообщения (пришёл ready). */
+  #ready = false;
 
   constructor(options: ChatViewProviderOptions) {
     this.#options = options;
@@ -114,6 +118,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       if (this.#view === view) {
         this.#view = undefined;
+        this.#ready = false;
+        this.#options.onViewDisposed?.();
       }
     });
 
@@ -125,7 +131,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Отправка произвольного сообщения в панель (используется #008 и др.). */
   async postMessage(message: ExtensionMessage): Promise<void> {
     const view = this.#view;
-    if (view === undefined) {
+    if (view === undefined || !this.#ready) {
       if (this.#pending.length < 50) {
         this.#pending.push(message);
       }
@@ -136,7 +142,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   async #flushPending(): Promise<void> {
     const view = this.#view;
-    if (view === undefined) {
+    if (view === undefined || !this.#ready) {
       return;
     }
     const pending = this.#pending.splice(0, this.#pending.length);
@@ -228,6 +234,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       board: this.#options.board
     });
     if (message.kind === 'ready') {
+      this.#ready = true;
       await this.#flushPending();
     }
   }

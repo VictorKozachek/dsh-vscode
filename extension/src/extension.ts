@@ -303,6 +303,9 @@ export function activate(context: vscode.ExtensionContext): void {
         newSessionController?.cancel();
       }
     },
+    onViewDisposed: () => {
+      boardVisible = false;
+    },
     board: {
       refresh: async () => {
         await kanbanProvider?.refresh();

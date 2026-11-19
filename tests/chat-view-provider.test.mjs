@@ -45,9 +45,17 @@ test('boardOpen до resolve view ставится в очередь и уход
   assert.equal(posted.length, 0, 'до resolve ничего не отправлено');
 
   provider.resolveWebviewView(view);
+  // Второе окно гонки: view resolved, но webview ещё не прислал ready.
+  await provider.postMessage({
+    type: 'boardOpen',
+    data: { columns: [], plugin: {}, empty: true, marker: 'after-resolve' }
+  });
+  assert.equal(posted.length, 0, 'до ready сообщения не теряются и не отправляются');
+
   await listener({ type: 'ready' });
   await new Promise((resolve) => setImmediate(resolve));
-  const board = posted.find((message) => message.type === 'boardOpen');
-  assert.ok(board, 'boardOpen доставлен после ready/resolve');
+  const boards = posted.filter((message) => message.type === 'boardOpen');
+  assert.equal(boards.length, 2, 'оба boardOpen доставлены после ready');
+  assert.equal(boards[1].data.marker, 'after-resolve');
   provider.dispose();
 });
