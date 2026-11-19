@@ -6,6 +6,8 @@ import type { ApprovalDecisionKind } from './approvals/approvalModel';
 import { chatFeedReducer, initialChatFeedState } from './chat/reducer';
 import { NewSessionModal } from './newSession/NewSessionModal';
 import { SettingsScreen } from './context/SettingsScreen';
+import { Board } from './board/Board';
+import type { BoardDataDto } from './board/boardModel';
 import { DraftStore, switchSessionDraft } from './chat/drafts';
 import { Composer } from './components/Composer';
 import { Header } from './components/Header';
@@ -41,6 +43,7 @@ export function App(): ReactElement {
   const [newSession, setNewSession] = useState<NewSessionFormDto | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsValues, setSettingsValues] = useState<Readonly<Record<string, unknown>>>({});
+  const [boardData, setBoardData] = useState<BoardDataDto | null>(null);
   const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
@@ -133,6 +136,10 @@ export function App(): ReactElement {
         case 'settingsOpen': {
           setSettingsValues(message.values);
           setSettingsOpen(true);
+          break;
+        }
+        case 'boardOpen': {
+          setBoardData(message.data as never);
           break;
         }
         case 'approvalRequest': {
@@ -315,6 +322,27 @@ export function App(): ReactElement {
         disabled={session !== null && session.sessionId === null}
         onCreateSession={openNewSession}
       />
+      {boardData === null ? null : (
+        <div className="dsh-modal-backdrop" role="dialog" aria-label="Kanban">
+          <div className="dsh-modal dsh-modal--wide">
+            <button
+              type="button"
+              className="dsh-button"
+              onClick={() => setBoardData(null)}
+              aria-label="Закрыть доску"
+            >
+              ×
+            </button>
+            <Board
+              data={boardData}
+              onRefresh={() => postToExtension({ type: 'boardRefresh' })}
+              onInstall={() => postToExtension({ type: 'boardInstall' })}
+              onOpenCard={(card) => postToExtension({ type: 'boardOpenCard', path: card.path })}
+              onCreateBoard={() => postToExtension({ type: 'boardCreate' })}
+            />
+          </div>
+        </div>
+      )}
       {settingsOpen ? (
         <div className="dsh-modal-backdrop" role="dialog" aria-label="DSH settings">
           <div className="dsh-modal">

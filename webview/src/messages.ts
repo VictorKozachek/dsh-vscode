@@ -208,4 +208,5 @@ export type ExtensionToWebview =
   | { readonly type: 'chatSession'; readonly session: ChatSessionDto }
   | { readonly type: 'composerDraft'; readonly text: string }
   | { readonly type: 'replaceFeed'; readonly records: readonly FeedRecordDto[] }
-  | { readonly type: 'settingsOpen'; readonly values: Readonly<Record<string, unknown>> };
+  | { readonly type: 'settingsOpen'; readonly values: Readonly<Record<string, unknown>> }
+  | { readonly type: 'boardOpen'; readonly data: BoardDataDto };
