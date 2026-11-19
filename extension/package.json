@@ -168,6 +168,11 @@
         "command": "dsh.reportDiagnostics",
         "title": "Report Diagnostics",
         "category": "DSH"
+      },
+      {
+        "command": "dsh.kanban.openBoard",
+        "title": "Открыть Kanban-доску",
+        "category": "DSH"
       }
     ],
     "configuration": {

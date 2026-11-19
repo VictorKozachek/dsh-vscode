@@ -50,6 +50,15 @@ export interface ChatSessionDispatchPort {
 }
 
 /** Зависимости диспетчера. */
+/** Порт доски Kanban (#036). */
+export interface BoardDispatchPort {
+  refresh(): Promise<void> | void;
+  install(): Promise<void> | void;
+  openCard(filePath: string): Promise<void> | void;
+  create(): Promise<void> | void;
+  close(): Promise<void> | void;
+}
+
 export interface ChatDispatchOptions {
   /** Потоковый чат (#008); без него — эхо-режим каркаса (#005). */
   readonly chat?: ChatController | undefined;
@@ -65,6 +74,8 @@ export interface ChatDispatchOptions {
   readonly chatSession?: ChatSessionDispatchPort | undefined;
   /** Экран настроек dsh.* (#013). */
   readonly settings?: SettingsDispatchPort | undefined;
+  /** Доска Kanban (#036). */
+  readonly board?: BoardDispatchPort | undefined;
 }
 
 /**
@@ -120,6 +131,26 @@ export async function dispatchWebviewMessage(
   }
   if (message.kind === 'settingsApply') {
     await options.settings?.apply(message.values);
+    return;
+  }
+  if (message.kind === 'boardRefresh') {
+    await options.board?.refresh();
+    return;
+  }
+  if (message.kind === 'boardInstall') {
+    await options.board?.install();
+    return;
+  }
+  if (message.kind === 'boardOpenCard') {
+    await options.board?.openCard(message.path);
+    return;
+  }
+  if (message.kind === 'boardCreate') {
+    await options.board?.create();
+    return;
+  }
+  if (message.kind === 'boardClose') {
+    await options.board?.close();
     return;
   }
 

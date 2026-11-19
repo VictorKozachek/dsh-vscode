@@ -566,3 +566,119 @@ body {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
 }
+
+/* --- Kanban board (#036) ------------------------------------------------- */
+.dsh-board {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 10px;
+  color: var(--vscode-foreground);
+}
+.dsh-board__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  background: var(--vscode-sideBar-background);
+  z-index: 1;
+}
+.dsh-board__count {
+  color: var(--vscode-descriptionForeground);
+}
+.dsh-board__plugin {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--vscode-editorWarning-foreground);
+  background: var(--vscode-inputValidation-warningBackground, var(--vscode-editorWidget-background));
+}
+.dsh-board__plugin--ok {
+  border-left-color: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+}
+.dsh-board__plugin-actions {
+  display: flex;
+  gap: 6px;
+}
+.dsh-board__columns {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  height: 100%;
+}
+.dsh-board__column {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-panel-border);
+}
+.dsh-board__column-title {
+  position: sticky;
+  top: 0;
+  margin: 0 0 4px;
+  padding: 4px 0;
+  background: inherit;
+  font-size: 0.9em;
+}
+.dsh-board__column-title span {
+  color: var(--vscode-descriptionForeground);
+}
+.dsh-board__card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px;
+  text-align: left;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.dsh-board__card:hover,
+.dsh-board__card:focus-visible {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-hoverBackground);
+}
+.dsh-board__card-id {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+}
+.dsh-board__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dsh-board__badge {
+  font-size: 0.75em;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+.dsh-board__updated {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.75em;
+}
+.dsh-board__empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+}
+.dsh-modal--wide {
+  width: min(1400px, 92vw);
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow: auto;
+}

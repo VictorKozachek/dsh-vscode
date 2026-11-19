@@ -20,7 +20,8 @@ import type {
   ApprovalDispatchPort,
   ChatSessionDispatchPort,
   NewSessionDispatchPort,
-  SettingsDispatchPort
+  SettingsDispatchPort,
+  BoardDispatchPort
 } from './chatDispatch';
 import {
   ChatSession,
@@ -56,6 +57,10 @@ export interface ChatViewProviderOptions {
   readonly chatSession?: ChatSessionDispatchPort | undefined;
   /** Экран настроек dsh.* (#013). */
   readonly settings?: SettingsDispatchPort | undefined;
+  /** Доска Kanban (#036). */
+  readonly board?: BoardDispatchPort | undefined;
+  /** Панель закрыта — сбросить host-флаги вроде boardVisible (#036). */
+  readonly onViewDisposed?: (() => void) | undefined;
 }
 
 const MAX_MESSAGES = 200;
@@ -73,6 +78,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   #chat: ChatController | undefined;
   #approvals: ApprovalDispatchPort | undefined;
   #chatSession: ChatSessionDispatchPort | undefined;
+  /** Сообщения до resolve webview (boardOpen может прийти из команды). */
+  readonly #pending: ExtensionMessage[] = [];
+  /** Webview готов принимать сообщения (пришёл ready). */
+  #ready = false;
 
   constructor(options: ChatViewProviderOptions) {
     this.#options = options;
@@ -109,6 +118,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       if (this.#view === view) {
         this.#view = undefined;
+        this.#ready = false;
+        this.#options.onViewDisposed?.();
       }
     });
 
@@ -120,10 +131,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Отправка произвольного сообщения в панель (используется #008 и др.). */
   async postMessage(message: ExtensionMessage): Promise<void> {
     const view = this.#view;
-    if (view === undefined) {
+    if (view === undefined || !this.#ready) {
+      if (this.#pending.length < 50) {
+        this.#pending.push(message);
+      }
       return;
     }
     await view.webview.postMessage(message);
+  }
+
+  async #flushPending(): Promise<void> {
+    const view = this.#view;
+    if (view === undefined || !this.#ready) {
+      return;
+    }
+    const pending = this.#pending.splice(0, this.#pending.length);
+    for (const message of pending) {
+      await view.webview.postMessage(message);
+    }
   }
 
   /** Дополнить ленту сообщением из extension host. */
@@ -205,8 +230,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       newSession: this.#options.newSession,
       approvals: this.#approvals,
       chatSession: this.#chatSession,
-      settings: this.#options.settings
+      settings: this.#options.settings,
+      board: this.#options.board
     });
+    if (message.kind === 'ready') {
+      this.#ready = true;
+      await this.#flushPending();
+    }
   }
 
 }

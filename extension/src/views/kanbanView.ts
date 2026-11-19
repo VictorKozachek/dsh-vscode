@@ -103,7 +103,12 @@ export class KanbanProvider implements vscode.TreeDataProvider<Node> {
 /** Регистрирует view, watcher (debounce) и команды refresh/open. */
 export function registerKanban(
   context: vscode.ExtensionContext,
-  options: { readonly log: (line: string) => void; readonly debounceMs?: number | undefined }
+  options: {
+    readonly log: (line: string) => void;
+    readonly debounceMs?: number | undefined;
+    /** Уведомление webview-доски после refresh (#036). */
+    readonly onColumns?: ((columns: readonly KanbanColumn[]) => void) | undefined;
+  }
 ): KanbanProvider {
   const provider = new KanbanProvider(options.log);
   context.subscriptions.push(

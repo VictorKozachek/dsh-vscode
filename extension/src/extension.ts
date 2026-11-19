@@ -27,7 +27,10 @@ import {
   type ContextInspectorProvider
 } from './views/contextInspectorView';
 import { buildContextInspector } from './views/contextInspector';
-import { registerKanban, type KanbanProvider } from './views/kanbanView';
+import { registerKanban, type KanbanProvider, KANBAN_OPEN_COMMAND } from './views/kanbanView';
+import { groupKanbanCards, KANBAN_COLUMNS } from './views/kanban';
+import { detectKanbanPlugin } from './views/kanbanPlugin';
+import type { BoardDataDto } from './views/chatHtml';
 import { createVscodeTerminalSession } from './terminal/vscodeTerminal';
 import { collectWorkspaceDiagnostics } from './diagnostics/vscodeDiagnostics';
 import type { ContextPack } from './context/contextLoader';
@@ -56,7 +59,8 @@ export const COMMAND_IDS = {
   reportDiagnostics: 'dsh.reportDiagnostics',
   resumeLastSession: 'dsh.resumeLastSession',
   openSettings: 'dsh.openSettings',
-  choosePrimaryWorkspace: 'dsh.choosePrimaryWorkspace'
+  choosePrimaryWorkspace: 'dsh.choosePrimaryWorkspace',
+  openBoard: 'dsh.kanban.openBoard'
 } as const;
 
 export type CommandId = (typeof COMMAND_IDS)[keyof typeof COMMAND_IDS];
@@ -71,7 +75,8 @@ const COMMAND_TITLES: Readonly<Record<CommandId, string>> = {
   [COMMAND_IDS.reportDiagnostics]: 'DSH: Report Diagnostics',
   [COMMAND_IDS.resumeLastSession]: 'DSH: Resume Last Session',
   [COMMAND_IDS.openSettings]: 'DSH: Open Settings',
-  [COMMAND_IDS.choosePrimaryWorkspace]: 'DSH: Choose Primary Workspace'
+  [COMMAND_IDS.choosePrimaryWorkspace]: 'DSH: Choose Primary Workspace',
+  [COMMAND_IDS.openBoard]: 'DSH: Открыть Kanban-доску'
 };
 
 let statusBarItem: vscode.StatusBarItem | undefined;
@@ -298,6 +303,32 @@ export function activate(context: vscode.ExtensionContext): void {
         newSessionController?.cancel();
       }
     },
+    onViewDisposed: () => {
+      boardVisible = false;
+    },
+    board: {
+      refresh: async () => {
+        await kanbanProvider?.refresh();
+        await postKanbanBoard();
+      },
+      install: async () => {
+        const data = lastBoardData ?? (await buildKanbanBoardData());
+        await vscode.window.showInformationMessage(
+          `Установите плагин: ${data.plugin.installCommand}`
+        );
+      },
+      openCard: async (filePath: string) => {
+        await vscode.commands.executeCommand(KANBAN_OPEN_COMMAND, filePath);
+      },
+      create: async () => {
+        await vscode.window.showInformationMessage(
+          'Создайте доску: bin/task-new.sh "<название>" в корне git-репозитория.'
+        );
+      },
+      close: () => {
+        boardVisible = false;
+      }
+    },
     settings: {
       apply: async (values) => {
         const result = await applySettings(values);
@@ -319,7 +350,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Kanban-панель (#014): read-only карточки из .kanban/tasks.
   kanbanProvider = registerKanban(context, {
-    log: (line) => log.appendLine(line)
+    log: (line) => log.appendLine(line),
+    onColumns: () => {
+      if (boardVisible && lastBoardData !== undefined) {
+        void postKanbanBoard();
+      }
+    }
   });
 
   // Инспектор контекста (#013): реальные правила/скилы/конфликты.
@@ -619,7 +655,60 @@ function maybeWarnRemoteRuntime(): void {
   }
 }
 
+let lastBoardData: BoardDataDto | undefined;
+let boardVisible = false;
+
+async function buildKanbanBoardData(): Promise<BoardDataDto> {
+  const loaded = kanbanProvider?.columns ?? [];
+  const grouped = groupKanbanCards(loaded.flatMap((column) => column.cards));
+  const columns = KANBAN_COLUMNS.map((status) => {
+    const match = grouped.find((column) => column.status === status);
+    return {
+      status,
+      label: match?.label ?? status,
+      cards: match?.cards ?? []
+    };
+  });
+  const profile = vscode.workspace.getConfiguration('dsh').get<string>('profile') ?? 'acp';
+  const plugin = await detectKanbanPlugin({
+    homeDirectory: process.env['HOME'] ?? process.env['USERPROFILE'] ?? '',
+    profile
+  });
+  return {
+    columns: columns.map((column) => ({
+      status: column.status,
+      label: column.label,
+      cards: column.cards.map((card) => ({
+        id: card.id,
+        title: card.title,
+        status: card.status,
+        owner: card.owner,
+        branch: card.branch,
+        updated: card.updated,
+        inBranch: card.inBranch,
+        path: card.path
+      }))
+    })),
+    plugin,
+    empty: columns.every((column) => column.cards.length === 0)
+  };
+}
+
+async function postKanbanBoard(): Promise<void> {
+  lastBoardData = await buildKanbanBoardData();
+  await chatViewProvider?.postMessage({ type: 'boardOpen', data: lastBoardData });
+}
+
 async function runCommand(command: CommandId): Promise<void> {
+  if (command === COMMAND_IDS.openBoard) {
+    boardVisible = true;
+    // Сначала фокус/resolve webview, затем boardOpen (provider ставит в очередь
+    // сообщения, пришедшие до resolve).
+    await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+    await kanbanProvider?.refresh();
+    await postKanbanBoard();
+    return;
+  }
   if (command === COMMAND_IDS.openTaskBoard) {
     await kanbanProvider?.refresh();
     try {
