@@ -87,6 +87,9 @@ export interface AcpRuntimeOptions {
   /** Домашний каталог для поиска профиля (`~`). */
   readonly homeDirectory: string;
   readonly env?: NodeJS.ProcessEnv | undefined;
+  /** Для тестов/extension host: подмена process.execPath и Electron-режима. */
+  readonly processExecPath?: string | undefined;
+  readonly electronRuntime?: boolean | undefined;
   readonly logger?: ((line: string) => void) | undefined;
   readonly onStateChanged?: ((state: RuntimeState) => void) | undefined;
   /** Таймаут обычных запросов (initialize, session.*). */
@@ -141,6 +144,85 @@ const DEFAULT_RESTART_FACTOR = 2;
 const DEFAULT_RESTART_MAX_MS = 10_000;
 const DEFAULT_MAX_RESTART_ATTEMPTS = 5;
 const DEFAULT_RESTART_STABLE_MS = 30_000;
+
+/** PATH для spawn: каталог текущего Node в начале, остальной PATH сохранён. */
+export function buildSpawnEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  execPath: string = process.execPath,
+  electron: boolean = process.versions['electron'] !== undefined
+): NodeJS.ProcessEnv {
+  // В extension host VS Code process.execPath — Electron/Code Helper, node в
+  // его каталоге нет; добавлять этот каталог в PATH бессмысленно (#031 review).
+  if (electron) {
+    return { ...baseEnv };
+  }
+  const nodeDirectory = path.dirname(execPath);
+  const separator = process.platform === 'win32' ? ';' : ':';
+  const existing = baseEnv['PATH'] ?? '';
+  const parts = existing.split(separator).filter((part) => part !== '');
+  if (!parts.includes(nodeDirectory)) {
+    parts.unshift(nodeDirectory);
+  }
+  return { ...baseEnv, PATH: parts.join(separator) };
+}
+
+/** План spawn с учётом Electron: ELECTRON_RUN_AS_NODE=1 + process.execPath. */
+export interface SpawnPlan {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly fallback: boolean;
+}
+
+export function buildSpawnPlan(options: {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly baseEnv: NodeJS.ProcessEnv;
+  readonly execPath?: string | undefined;
+  readonly electron?: boolean | undefined;
+  readonly isScript?: boolean | undefined;
+  readonly envNode?: boolean | undefined;
+}): SpawnPlan {
+  const execPath = options.execPath ?? process.execPath;
+  const electron = options.electron ?? process.versions['electron'] !== undefined;
+  const env = buildSpawnEnvironment(options.baseEnv, execPath, electron);
+  const nodeOnPath = hasNodeOnPath(options.baseEnv);
+  const fallback = options.envNode === true && !nodeOnPath;
+  const useNode = options.isScript === true || fallback;
+  if (!useNode) {
+    return { executable: options.command, args: options.args, env, fallback: false };
+  }
+  if (electron) {
+    env['ELECTRON_RUN_AS_NODE'] = '1';
+  }
+  return {
+    executable: execPath,
+    args: [options.command, ...options.args],
+    env,
+    fallback
+  };
+}
+
+/** Скрипт с shebang `#!/usr/bin/env node`. */
+export async function isEnvNodeScript(command: string): Promise<boolean> {
+  if (command === 'npx' || command === 'node') {
+    return false;
+  }
+  try {
+    const content = await readFile(command, 'utf8');
+    const firstLine = content.split('\n', 1)[0] ?? '';
+    return firstLine.startsWith('#!') && /\benv\s+node\b/.test(firstLine);
+  } catch {
+    return false;
+  }
+}
+
+function hasNodeOnPath(baseEnv: NodeJS.ProcessEnv): boolean {
+  const separator = process.platform === 'win32' ? ';' : ':';
+  return (baseEnv['PATH'] ?? '')
+    .split(separator)
+    .some((directory) => directory !== '' && /node(\.exe)?$/i.test(directory));
+}
 
 /**
  * Рантайм DSH поверх ACP stdio. Реализует порт `DshBridgePort` (#004/#007).
@@ -452,14 +534,28 @@ export class AcpRuntime {
     this.#log(`ACP: запуск ${command.displayPath} (${command.source})`);
 
     const isScript = command.command === 'npx' ? false : /\.[cm]?js$/i.test(command.command);
-    const executable = isScript ? process.execPath : command.command;
-    const args = isScript ? [command.command, ...command.args] : [...command.args];
+    const baseEnv = this.#options.env ?? process.env;
+    const execPath = this.#options.processExecPath ?? process.execPath;
+    const electron = this.#options.electronRuntime ?? process.versions['electron'] !== undefined;
+    const envNode = isScript ? false : await isEnvNodeScript(command.command);
+    const plan = buildSpawnPlan({
+      command: command.command,
+      args: command.args,
+      baseEnv,
+      execPath,
+      electron,
+      isScript,
+      envNode
+    });
+    this.#log(
+      `ACP: node ${execPath} (${electron ? 'Electron, ELECTRON_RUN_AS_NODE=1' : 'node'}); PATH ${plan.env['PATH'] ?? ''}${plan.fallback ? ' (fallback env node → process.execPath)' : ''}`
+    );
 
     let child: ChildProcess;
     try {
-      child = spawn(executable, args, {
+      child = spawn(plan.executable, [...plan.args], {
         cwd: this.#workspacePath,
-        env: this.#options.env ?? process.env,
+        env: plan.env,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         // На POSIX — своя группа процессов: stop() гасит и внуков (npx и т.п.).
@@ -539,6 +635,11 @@ export class AcpRuntime {
   }
 
   #handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (code === 127) {
+      this.#log(
+        'ACP: код 127 — dsh не смог найти node (env node). Проверьте PATH или укажите путь к node/dsh в dsh.executablePath.'
+      );
+    }
     const wasStopping = this.#stopping;
     const uptime = this.#startedAt === 0 ? 0 : Date.now() - this.#startedAt;
     this.#startedAt = 0;

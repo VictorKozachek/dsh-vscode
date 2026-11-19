@@ -61,7 +61,9 @@ test('A→B→A на реальном DshBridge: grace, processCount, teardown',
       runtimes.set(folder.id, runtime);
       return runtime;
     },
-    graceMs: 250,
+    // Запас больше любых задержек полного параллельного прогона: иначе под
+    // нагрузкой grace истекает между activate(A→B→A) и A пересоздаётся.
+    graceMs: 3000,
     debounceMs: 0
   });
   lifecycleRef = lifecycle;
@@ -92,7 +94,7 @@ test('A→B→A на реальном DshBridge: grace, processCount, teardown',
     assert.equal(runtimes.get('a'.repeat(16)), runtimeA, 'A возобновлён без пересоздания');
     assert.equal(runtimeA.processCount, 1, 'процесс A не перезапускался');
 
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await new Promise((resolve) => setTimeout(resolve, 3300));
     assert.equal(runtimeB.processCount, 0, 'B погашен после grace');
 
     await lifecycle.teardownAll();
