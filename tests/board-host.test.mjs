@@ -31,3 +31,19 @@ test('Board показывает статус плагина, установку
   assert.match(source, /onCreateBoard/);
   assert.match(source, /createBoard|нет `\.kanban\/tasks`/);
 });
+
+test('баннер плагина живёт в App (до перезагрузки) и закрытие шлёт boardClose', async () => {
+  const app = await readFile(new URL('../webview/src/App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /boardPluginHidden/);
+  assert.match(app, /pluginBannerHidden=\{boardPluginHidden\}/);
+  assert.match(app, /onHidePlugin=/, 'скрытие поднято в App');
+  assert.match(app, /type: 'boardClose'/, 'закрытие сообщает host');
+
+  const extension = await readFile(new URL('../extension/src/extension.ts', import.meta.url), 'utf8');
+  assert.match(extension, /boardVisible = true/);
+  assert.match(extension, /boardVisible = false/);
+  assert.match(extension, /if \(boardVisible && lastBoardData/, 'watcher не открывает закрытую доску');
+  const focusAt = extension.indexOf("ChatViewProvider.viewType}.focus");
+  const postAt = extension.indexOf('await postKanbanBoard();');
+  assert.ok(focusAt !== -1 && postAt !== -1 && focusAt < postAt, 'фокус до boardOpen');
+});

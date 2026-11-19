@@ -137,7 +137,8 @@ export type WebviewMessage =
   | { readonly kind: 'boardRefresh' }
   | { readonly kind: 'boardInstall' }
   | { readonly kind: 'boardOpenCard'; readonly path: string }
-  | { readonly kind: 'boardCreate' };
+  | { readonly kind: 'boardCreate' }
+  | { readonly kind: 'boardClose' };
 
 /** Типы сообщений WebView → extension (для проверки паритета с webview/). */
 export const WEBVIEW_MESSAGE_TYPES = [
@@ -155,7 +156,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'boardRefresh',
   'boardInstall',
   'boardOpenCard',
-  'boardCreate'
+  'boardCreate',
+  'boardClose'
 ] as const;
 
 /** Статус потока ответа в панели. */
@@ -291,6 +293,9 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | null {
   }
   if (type === 'boardCreate') {
     return { kind: 'boardCreate' };
+  }
+  if (type === 'boardClose') {
+    return { kind: 'boardClose' };
   }
   return null;
 }
@@ -520,7 +525,8 @@ export class ChatSession {
       message.kind === 'boardRefresh' ||
       message.kind === 'boardInstall' ||
       message.kind === 'boardOpenCard' ||
-      message.kind === 'boardCreate'
+      message.kind === 'boardCreate' ||
+      message.kind === 'boardClose'
     ) {
       return [];
     }

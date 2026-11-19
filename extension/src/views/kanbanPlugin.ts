@@ -50,14 +50,43 @@ export async function detectKanbanPlugin(ports: KanbanPluginPorts): Promise<Kanb
         }
       }
     }
-    for (const key of ['plugins', 'dshPlugins']) {
+    for (const key of ['plugins', 'dshPlugins', 'bundles']) {
       const plugins = parsed[key];
-      if (Array.isArray(plugins)) {
-        for (const plugin of plugins) {
-          if (typeof plugin === 'string') {
-            names.add(plugin);
-          } else if (typeof plugin === 'object' && plugin !== null && typeof (plugin as { name?: unknown }).name === 'string') {
-            names.add((plugin as { name: string }).name);
+      if (!Array.isArray(plugins)) {
+        continue;
+      }
+      for (const plugin of plugins) {
+        if (typeof plugin === 'string') {
+          names.add(plugin);
+        } else if (
+          typeof plugin === 'object' &&
+          plugin !== null &&
+          typeof (plugin as { name?: unknown }).name === 'string'
+        ) {
+          names.add((plugin as { name: string }).name);
+        }
+      }
+    }
+    // Реальные профили DSH держат bundle в dsh.profile.bundles.
+    const dsh = parsed['dsh'];
+    if (typeof dsh === 'object' && dsh !== null) {
+      const profile = (dsh as { profile?: unknown }).profile;
+      if (typeof profile === 'object' && profile !== null) {
+        for (const key of ['bundles', 'plugins', 'dshPlugins']) {
+          const list = (profile as Record<string, unknown>)[key];
+          if (!Array.isArray(list)) {
+            continue;
+          }
+          for (const plugin of list) {
+            if (typeof plugin === 'string') {
+              names.add(plugin);
+            } else if (
+              typeof plugin === 'object' &&
+              plugin !== null &&
+              typeof (plugin as { name?: unknown }).name === 'string'
+            ) {
+              names.add((plugin as { name: string }).name);
+            }
           }
         }
       }

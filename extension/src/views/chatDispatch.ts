@@ -56,6 +56,7 @@ export interface BoardDispatchPort {
   install(): Promise<void> | void;
   openCard(filePath: string): Promise<void> | void;
   create(): Promise<void> | void;
+  close(): Promise<void> | void;
 }
 
 export interface ChatDispatchOptions {
@@ -146,6 +147,10 @@ export async function dispatchWebviewMessage(
   }
   if (message.kind === 'boardCreate') {
     await options.board?.create();
+    return;
+  }
+  if (message.kind === 'boardClose') {
+    await options.board?.close();
     return;
   }
 

@@ -77,7 +77,8 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'boardRefresh',
   'boardInstall',
   'boardOpenCard',
-  'boardCreate'
+  'boardCreate',
+  'boardClose'
 ] as const;
 
 /** Сообщения extension host → WebView. */
@@ -186,7 +187,8 @@ export type WebviewToExtension =
   | { readonly type: 'boardRefresh' }
   | { readonly type: 'boardInstall' }
   | { readonly type: 'boardOpenCard'; readonly path: string }
-  | { readonly type: 'boardCreate' };
+  | { readonly type: 'boardCreate' }
+  | { readonly type: 'boardClose' };
 
 /** Сообщение из extension host в WebView. */
 export type ExtensionToWebview =

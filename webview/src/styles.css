@@ -676,3 +676,9 @@ body {
   text-align: center;
   color: var(--vscode-descriptionForeground);
 }
+.dsh-modal--wide {
+  width: min(1400px, 92vw);
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow: auto;
+}

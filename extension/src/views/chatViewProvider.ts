@@ -76,6 +76,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   #chat: ChatController | undefined;
   #approvals: ApprovalDispatchPort | undefined;
   #chatSession: ChatSessionDispatchPort | undefined;
+  /** Сообщения до resolve webview (boardOpen может прийти из команды). */
+  readonly #pending: ExtensionMessage[] = [];
 
   constructor(options: ChatViewProviderOptions) {
     this.#options = options;
@@ -124,9 +126,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   async postMessage(message: ExtensionMessage): Promise<void> {
     const view = this.#view;
     if (view === undefined) {
+      if (this.#pending.length < 50) {
+        this.#pending.push(message);
+      }
       return;
     }
     await view.webview.postMessage(message);
+  }
+
+  async #flushPending(): Promise<void> {
+    const view = this.#view;
+    if (view === undefined) {
+      return;
+    }
+    const pending = this.#pending.splice(0, this.#pending.length);
+    for (const message of pending) {
+      await view.webview.postMessage(message);
+    }
   }
 
   /** Дополнить ленту сообщением из extension host. */
@@ -211,6 +227,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       settings: this.#options.settings,
       board: this.#options.board
     });
+    if (message.kind === 'ready') {
+      await this.#flushPending();
+    }
   }
 
 }

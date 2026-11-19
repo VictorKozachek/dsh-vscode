@@ -44,6 +44,8 @@ export function App(): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsValues, setSettingsValues] = useState<Readonly<Record<string, unknown>>>({});
   const [boardData, setBoardData] = useState<BoardDataDto | null>(null);
+  // Скрытие баннера плагина живёт до перезагрузки webview, а не Board.
+  const [boardPluginHidden, setBoardPluginHidden] = useState(false);
   const [approvals, setApprovals] = useState<readonly ApprovalRequestMessage[]>([]);
   const [session, setSession] = useState<ChatSessionDto | null>(null);
   const draftsRef = useRef(new DraftStore());
@@ -328,7 +330,10 @@ export function App(): ReactElement {
             <button
               type="button"
               className="dsh-button"
-              onClick={() => setBoardData(null)}
+              onClick={() => {
+                setBoardData(null);
+                postToExtension({ type: 'boardClose' });
+              }}
               aria-label="Закрыть доску"
             >
               ×
@@ -339,6 +344,8 @@ export function App(): ReactElement {
               onInstall={() => postToExtension({ type: 'boardInstall' })}
               onOpenCard={(card) => postToExtension({ type: 'boardOpenCard', path: card.path })}
               onCreateBoard={() => postToExtension({ type: 'boardCreate' })}
+              pluginBannerHidden={boardPluginHidden}
+              onHidePlugin={() => setBoardPluginHidden(true)}
             />
           </div>
         </div>

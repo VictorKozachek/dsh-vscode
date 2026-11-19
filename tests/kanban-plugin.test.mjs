@@ -35,3 +35,16 @@ test('dsh-kanban не установлен: нет зависимости/про
   assert.equal(missing.installed, false);
   assert.match(missing.reason ?? '', /не установлен/);
 });
+
+
+test('dsh-kanban активен через bundle-only профиль (dsh.profile.bundles)', async () => {
+  const home = await fixture({
+    dsh: {
+      profile: {
+        bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-kanban']
+      }
+    }
+  });
+  const status = await detectKanbanPlugin({ homeDirectory: home, profile: 'acp' });
+  assert.equal(status.installed, true);
+});

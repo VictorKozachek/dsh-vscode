@@ -321,6 +321,9 @@ export function activate(context: vscode.ExtensionContext): void {
         await vscode.window.showInformationMessage(
           'Создайте доску: bin/task-new.sh "<название>" в корне git-репозитория.'
         );
+      },
+      close: () => {
+        boardVisible = false;
       }
     },
     settings: {
@@ -346,7 +349,7 @@ export function activate(context: vscode.ExtensionContext): void {
   kanbanProvider = registerKanban(context, {
     log: (line) => log.appendLine(line),
     onColumns: () => {
-      if (lastBoardData !== undefined) {
+      if (boardVisible && lastBoardData !== undefined) {
         void postKanbanBoard();
       }
     }
@@ -650,6 +653,7 @@ function maybeWarnRemoteRuntime(): void {
 }
 
 let lastBoardData: BoardDataDto | undefined;
+let boardVisible = false;
 
 async function buildKanbanBoardData(): Promise<BoardDataDto> {
   const loaded = kanbanProvider?.columns ?? [];
@@ -694,9 +698,12 @@ async function postKanbanBoard(): Promise<void> {
 
 async function runCommand(command: CommandId): Promise<void> {
   if (command === COMMAND_IDS.openBoard) {
+    boardVisible = true;
+    // Сначала фокус/resolve webview, затем boardOpen (provider ставит в очередь
+    // сообщения, пришедшие до resolve).
+    await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
     await kanbanProvider?.refresh();
     await postKanbanBoard();
-    await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
     return;
   }
   if (command === COMMAND_IDS.openTaskBoard) {

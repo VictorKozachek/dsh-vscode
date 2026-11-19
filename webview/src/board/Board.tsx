@@ -1,6 +1,4 @@
 import type { ReactElement } from 'react';
-import { useState } from 'react';
-
 import {
   cardBadges,
   type BoardCardDto,
@@ -13,15 +11,18 @@ export function Board({
   onRefresh,
   onInstall,
   onOpenCard,
-  onCreateBoard
+  onCreateBoard,
+  pluginBannerHidden = false,
+  onHidePlugin
 }: {
   readonly data: BoardDataDto;
   readonly onRefresh: () => void;
   readonly onInstall: () => void;
   readonly onOpenCard: (card: BoardCardDto) => void;
   readonly onCreateBoard: () => void;
+  readonly pluginBannerHidden?: boolean | undefined;
+  readonly onHidePlugin?: (() => void) | undefined;
 }): ReactElement {
-  const [pluginBannerHidden, setPluginBannerHidden] = useState(false);
 
   return (
     <section className="dsh-board" aria-label="Kanban доска">
@@ -47,7 +48,7 @@ export function Board({
               <button
                 type="button"
                 className="dsh-button"
-                onClick={() => setPluginBannerHidden(true)}
+                onClick={() => onHidePlugin?.()}
               >
                 Работать со встроенной доской
               </button>

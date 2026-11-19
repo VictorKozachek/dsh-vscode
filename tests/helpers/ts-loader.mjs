@@ -4,6 +4,9 @@
  * Расширение `.ts` подставляется только после неудачи стандартного резолва.
  */
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'vscode') {
+    return nextResolve('./vscode-stub.mjs', { ...context, parentURL: import.meta.url });
+  }
   try {
     return await nextResolve(specifier, context);
   } catch (error) {
